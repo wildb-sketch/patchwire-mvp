@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: patchwire
+    runtime: node
+    plan: starter
+    buildCommand: npm ci --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATA_FILE
+        value: /data/data.json
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TURN_URL
+        sync: false
+      - key: TURN_USER
+        sync: false
+      - key: TURN_PASS
+        sync: false
+    disk:
+      name: patchwire-data
+      mountPath: /data
+      sizeGB: 1

@@ -1,0 +1,16 @@
+{
+  "appId": "com.patchwire.app",
+  "appName": "Patchwire",
+  "webDir": "www",
+  "backgroundColor": "#000000",
+  "server": {
+    "androidScheme": "https",
+    "allowNavigation": [
+      "*"
+    ]
+  },
+  "android": {
+    "appendUserAgent": "PatchwireApp",
+    "allowMixedContent": false
+  }
+}

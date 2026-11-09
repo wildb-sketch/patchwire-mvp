@@ -1,0 +1,22 @@
+name = "patchwire"
+main = "src/worker.js"
+compatibility_date = "2025-06-01"
+
+# The website (the same files the Node server serves) is served from here.
+[assets]
+directory = "../public"
+
+# One Durable Object holds accounts, messages, rooms and live connections.
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "Hub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Hub"]
+
+# Optional settings. Secrets (ANTHROPIC_API_KEY, TURN_PASS) are set with `npx wrangler secret put`.
+[vars]
+# ROOM_GRACE_MS = "45000"
+# TURN_URL = "turn:your-turn-host:3478,turns:your-turn-host:5349"
+# TURN_USER = ""
