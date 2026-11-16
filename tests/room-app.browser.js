@@ -1,0 +1,40 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { spawn } = require('node:child_process');
+const { chromium } = require('playwright');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), net = require('node:net');
+test('both complete app designs retain microphone, mute, chat and room across network recovery', {timeout:45000}, async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'whassabi-app-'));
+ const listener=net.createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));const port=listener.address().port;await new Promise(r=>listener.close(r));
+ const base=`http://127.0.0.1:${port}`;
+ const server=spawn(process.execPath,[path.join(__dirname,'../server.js')],{env:{...process.env,PORT:String(port),DATA_FILE:path.join(dir,'data.json')},stdio:['ignore','pipe','pipe']});
+ let browser;
+ t.after(async()=>{await browser?.close();server.kill();await new Promise(r=>server.exitCode!==null?r():server.once('exit',r));fs.rmSync(dir,{recursive:true,force:true})});
+ await new Promise((resolve,reject)=>{server.stdout.once('data',resolve);server.once('error',reject)});
+ browser=await chromium.launch({headless:true,args:['--no-sandbox','--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream','--autoplay-policy=no-user-gesture-required']});
+ const errors=[],pages=[];
+ for(const [nick,route] of [['host','/neon'],['guest','/']]){
+  const r=await fetch(base+'/api/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nick,email:nick+'@example.test',password:'test-voice-password'})});const account=await r.json();assert(account.token);
+  const context=await browser.newContext();await context.grantPermissions(['microphone'],{origin:base});
+  await context.addInitScript(token=>localStorage.setItem('pw_tok',token),account.token);
+  const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(base+route);
+  await page.waitForFunction(()=>typeof ws!=='undefined'&&ws?.readyState===1&&S.me);pages.push(page);
+ }
+ const [host,guest]=pages;
+ await host.evaluate(()=>wsSend({type:'room:create',title:'Network recovery test'}));await host.waitForFunction(()=>S.room&&R.mic);
+ const roomId=await host.evaluate(()=>S.room.id);
+ await guest.evaluate(id=>wsSend({type:'room:join',id}),roomId);await guest.waitForFunction(()=>S.room);
+ await guest.evaluate(()=>wsSend({type:'room:hand',on:true}));
+ const guestId=await guest.evaluate(()=>S.me.id);
+ await host.waitForFunction(id=>S.room.members.some(m=>m.uid===id&&m.hand),guestId);
+ await host.evaluate(id=>wsSend({type:'room:role',uid:id,role:'speaker'}),guestId);await guest.waitForFunction(()=>R.mic);
+ await guest.waitForFunction(()=>Object.values(R.peers).some(p=>p.pc.connectionState==='connected'));
+ const before=await guest.evaluate(()=>({track:R.mic.id,room:S.room.id,leaveToken:S.roomLeaveToken}));
+ await guest.evaluate(()=>{setMute(true);networkChanged()});
+ await guest.waitForFunction(old=>S.roomLeaveToken!==old&&Object.values(R.peers).some(p=>p.pc.connectionState==='connected'&&p.pc.signalingState==='stable'),before.leaveToken);
+ assert.deepEqual(await guest.evaluate(()=>({track:R.mic.id,room:S.room.id,muted:S.muted,enabled:R.mic.enabled})),{track:before.track,room:before.room,muted:true,enabled:false});
+ await guest.evaluate(()=>wsSend({type:'room:chat',t:'chat survived handover'}));
+ await host.waitForFunction(()=>S.chat.some(m=>m.t==='chat survived handover'));
+ await guest.evaluate(()=>setMute(false));await guest.waitForFunction(()=>R.mic.enabled&&!S.muted);
+ assert.deepEqual(errors,[]);
+});

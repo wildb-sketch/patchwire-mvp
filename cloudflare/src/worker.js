@@ -102,7 +102,7 @@ export class Hub extends DurableObject {
         if (!row) return new Response(null, { status: 404 });
         return new Response(bytesOf(row.data), { headers: { 'Content-Type': row.type, 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' } });
       }
-      if (url.pathname === '/healthz') return new Response('ok');
+      if (url.pathname === '/healthz') return new Response('ok', { headers: { 'X-Voice-Relay': this.env.TURN_URL ? 'configured' : 'missing' } });
       if (url.pathname.startsWith('/api/')) return await this.api(request, url);
       return new Response('Not found', { status: 404 });
     } catch (e) { return json(500, { error: 'Server error' }); }

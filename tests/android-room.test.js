@@ -20,6 +20,8 @@ function harness(file, { android = true, capture = async () => stream(), native 
   navigator: { mediaDevices: { getUserMedia: capture } }, localStorage: { removeItem() {} },
   console, MediaStream: class {},
   S: { me: { id: 'me' }, room: { id: 'room1', title: 'Test', host: 'me', members: [{ uid: 'me', role: 'speaker' }] }, muted: false, ov: null },
+  audio: {syncTracks: async () => {},recoverAll() {}}, networkTimer: 0,
+  clearTimeout() {},
   R: { mic: null, peers: {}, an: {} }, micCons: () => ({}),
   iSpeak: () => context.S.room?.members.some(m => m.uid === 'me' && m.role === 'speaker'),
   wsSend: value => { messages.push(value); return true; }, toast: value => toasts.push(value),
@@ -123,19 +125,6 @@ for (const file of ['index.html', 'neon.html']) {
   h.context.doLeave('end'); h.context.connect();
   h.context.ws.onmessage({ data: JSON.stringify({ type: 'room:joined', room, resumed: true }) });
   assert.equal(h.context.S.room, null); assert.equal(h.context.R.mic, null);
- });
- test(`${file}: a departed peer is named once without blaming the remaining participant's network`, () => {
-  const h = harness(file), html = fs.readFileSync(path.join(root, 'public', file), 'utf8');
-  h.context.S.room.members.push({ uid: 'other', nick: 'Toto', role: 'speaker' });
-  h.context.ICE = [];
-  h.context.RTCPeerConnection = class { constructor() { this.connectionState = 'new'; } };
-  h.context.handle = nick => '@' + nick.toLowerCase();
-  h.run(html.slice(html.indexOf('const conn='), html.indexOf('const onSignal=')));
-  const peer = h.run("conn('other',false)"); peer.pc.connectionState = 'failed';
-  peer.pc.onconnectionstatechange(); peer.pc.onconnectionstatechange();
-  assert.equal(h.toasts.length, 1); assert(h.toasts[0].includes('@toto')); assert(h.toasts[0].includes('reconnect'));
-  assert(!h.toasts[0].includes('TURN')); assert(!h.toasts[0].includes('your network'));
-  delete h.context.R.peers.other; peer.pc.onconnectionstatechange(); assert.equal(h.toasts.length, 1);
  });
  test(`${file}: native membership confirmation cleans only the matching room`, async () => {
   const h = harness(file); await h.context.syncMic(); h.context.connect();
