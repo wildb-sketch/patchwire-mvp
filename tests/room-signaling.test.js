@@ -33,8 +33,9 @@ test('signaling heartbeat, muted seat recovery, host transfer, and room end', { 
   const a = socket(host.token), b = socket(guest.token);
   await Promise.all([a.wait(d => d.type === 'rooms'), b.wait(d => d.type === 'rooms')]);
   a.send({ type: 'ping' }); assert.equal((await a.wait(d => d.type === 'pong')).type, 'pong');
-  a.send({ type: 'room:create', title: 'Voice test', topic: 'Talk' }); const room = (await a.wait(d => d.type === 'room:joined')).room;
-  b.send({ type: 'room:join', id: room.id }); await b.wait(d => d.type === 'room:joined');
+  a.send({ type: 'room:create', title: 'Voice test', topic: 'Talk' }); const joined = await a.wait(d => d.type === 'room:joined'), room = joined.room;
+  assert(joined.leaveToken); assert(!JSON.stringify(room).includes(joined.leaveToken));
+  b.send({ type: 'room:join', id: room.id }); const guestJoined = await b.wait(d => d.type === 'room:joined');
   a.send({ type: 'room:leave' }); await a.wait(d => d.type === 'room:error' && d.error.includes('Choose a speaker'));
   a.send({ type: 'room:create', title: 'Do not replace the hosted room' }); await a.wait(d => d.type === 'room:error' && d.error.includes('Hand over or end'));
   b.send({ type: 'room:hand', on: true }); await a.wait(d => d.type === 'room:state' && d.room.members.some(m => m.uid === guest.me.id && m.hand));
@@ -43,9 +44,26 @@ test('signaling heartbeat, muted seat recovery, host transfer, and room end', { 
   b.ws.close(); await new Promise(resolve => b.ws.once('close', resolve));
   const resumed = socket(guest.token); const restored = await resumed.wait(d => d.type === 'room:joined' && d.resumed);
   assert.equal(restored.room.id, room.id); assert(restored.room.members.find(m => m.uid === guest.me.id).muted);
-  a.send({ type: 'room:leave', automatic: true }); await resumed.wait(d => d.type === 'room:state' && d.room.host === guest.me.id);
+  assert.notEqual(restored.leaveToken, guestJoined.leaveToken);
+  const nativeLeave = (token, roomId, leaveToken) => fetch(base + '/api/room/leave', {
+   method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+   body: JSON.stringify({ roomId, leaveToken })
+  });
+  assert.equal((await nativeLeave('invalid', room.id, joined.leaveToken)).status, 401);
+  // A delayed dismissal from the previous connection cannot evict the recovered seat.
+  assert.equal((await nativeLeave(guest.token, room.id, guestJoined.leaveToken)).status, 200);
+  // A participant cannot use another participant's private lease to remove themselves/the host.
+  assert.equal((await nativeLeave(guest.token, room.id, joined.leaveToken)).status, 200);
+  resumed.send({ type: 'room:mute', on: false });
+  await resumed.wait(d => d.type === 'room:state' && d.room.members.some(m => m.uid === guest.me.id && !m.muted));
+  assert.equal((await nativeLeave(host.token, room.id, joined.leaveToken)).status, 200);
+  await a.wait(d => d.type === 'room:left' && d.id === room.id);
+  await resumed.wait(d => d.type === 'room:state' && d.room.host === guest.me.id);
   a.send({ type: 'room:join', id: room.id }); await a.wait(d => d.type === 'room:joined');
-  resumed.send({ type: 'room:leave', automatic: true }); await a.wait(d => d.type === 'room:ended');
+  assert.equal((await nativeLeave(guest.token, 'wrong-room', restored.leaveToken)).status, 200);
+  assert.equal((await nativeLeave(guest.token, room.id, restored.leaveToken)).status, 200);
+  assert.equal((await nativeLeave(guest.token, room.id, restored.leaveToken)).status, 200); // idempotent
+  await a.wait(d => d.type === 'room:ended');
   await resumed.wait(d => d.type === 'rooms' && !d.rooms.some(r => r.id === room.id));
  } finally {
   for (const ws of clients) ws.terminate();

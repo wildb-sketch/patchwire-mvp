@@ -635,10 +635,14 @@ const iSpeak=()=>!!S.room&&S.room.members.some(m=>m.uid==S.me.id&&m.role=='speak
 const setTrack=async pc=>{const t=pc.getTransceivers()[0];if(t&&t.sender)try{await t.sender.replaceTrack(R.mic&&iSpeak()?R.mic:null)}catch(e){console.error('Could not attach room microphone',e)}};
 const drop=u=>{delete R.an[u];const p=R.peers[u];if(!p)return;try{p.pc.close()}catch(e){}if(p.audio)p.audio.remove();delete R.peers[u]};
 const conn=(u,off)=>{if(R.peers[u])return R.peers[u];
- const pc=new RTCPeerConnection({iceServers:ICE}),P={pc,q:[],audio:null};R.peers[u]=P;
+ const pc=new RTCPeerConnection({iceServers:ICE}),P={pc,q:[],audio:null,failureNotified:false};R.peers[u]=P;
  pc.onicecandidate=e=>{if(e.candidate)wsSend({type:'room:signal',to:u,data:{c:e.candidate}})};
  pc.ontrack=e=>{if(!P.audio){P.audio=document.createElement('audio');P.audio.autoplay=true;P.audio.muted=S.deaf;document.body.append(P.audio)}P.audio.srcObject=e.streams[0]||new MediaStream([e.track]);P.audio.play().catch(()=>{});watch(u,new MediaStream([e.track]))};
- pc.onconnectionstatechange=()=>{if(pc.connectionState==='failed')toast('Voice connection failed. Check your network; some networks require a TURN relay.')};
+ pc.onconnectionstatechange=()=>{
+  if(R.peers[u]!==P||!S.room?.members.some(m=>m.uid===u))return;
+  if(pc.connectionState==='connected')P.failureNotified=false;
+  if(pc.connectionState==='failed'&&!P.failureNotified){P.failureNotified=true;const member=S.room.members.find(m=>m.uid===u);toast(handle(member.nick)+'’s audio disconnected. Waiting for them to reconnect.')}
+ };
  if(off){pc.addTransceiver('audio',{direction:'sendrecv'});pc.createOffer().then(o=>pc.setLocalDescription(o)).then(()=>wsSend({type:'room:signal',to:u,data:{s:pc.localDescription}})).catch(()=>{})}
  setTrack(pc);return P};
 const onSignal=async(from,d)=>{if(!S.room||!d||!S.room.members.some(m=>m.uid===from))return;
@@ -670,7 +674,7 @@ function roomCall(method,options={}){
 }
 function nativeRoom(action,val){
  const p=action==='stop'?roomCall('stopRoom'):action==='mute'?roomCall('setMuted',{muted:!!val||!R.mic,speaking:iSpeak()}):
-  roomCall('startRoom',{title:S.room?.title||'Live room',microphone:!!val,speaking:iSpeak(),muted:S.muted||!iSpeak()||!R.mic});
+  roomCall('startRoom',{serverUrl:location.origin,token:S.tok,roomId:S.room?.id,leaveToken:S.roomLeaveToken,title:S.room?.title||'Live room',microphone:!!val,speaking:iSpeak(),muted:S.muted||!iSpeak()||!R.mic});
  return p.then(status=>{if(status?.notificationsEnabled===false&&!notificationWarning){notificationWarning=true;toast('Enable Android notifications for Whassabi to see room controls. Voice can continue without them')}});
 }
 const micError=e=>{
@@ -730,7 +734,7 @@ function syncMic(){
  })().finally(()=>{micSync=null});
  return micSync;
 }
-function cleanup(){roomEpoch++;micFailed=false;S.invAsk=false;if($('#mb [data-ok]'))closeModal();nativeRoom('stop').catch(e=>toast(micError(e)));Object.keys(R.peers).forEach(drop);if(R.mic){R.mic.stop();R.mic=null}if(S.me)delete R.an[S.me.id];S.room=null;S.chat=[];S.react=0;S.muted=false;S.deaf=false;if(S.ov&&S.ov.t=='room'){dropOv()}render()}
+function cleanup(){roomEpoch++;micFailed=false;S.invAsk=false;if($('#mb [data-ok]'))closeModal();nativeRoom('stop').catch(e=>toast(micError(e)));Object.keys(R.peers).forEach(drop);if(R.mic){R.mic.stop();R.mic=null}if(S.me)delete R.an[S.me.id];S.room=null;S.roomLeaveToken='';S.chat=[];S.react=0;S.muted=false;S.deaf=false;if(S.ov&&S.ov.t=='room'){dropOv()}render()}
 const bootRoom=async()=>{try{const r=await fetch('/api/ice',{headers:{Authorization:'Bearer '+S.tok}});if(r.ok)ICE=await r.json()}catch(e){}
  let m=/^#room=([0-9a-f]{8})$/.exec(location.hash);if(m){history.replaceState(null,'',location.pathname);wsSend({type:'room:join',id:m[1]});return}
  m=/^#u=([0-9a-f]{12})$/.exec(location.hash);if(m){history.replaceState(null,'',location.pathname);openProfile(m[1])}};
@@ -752,7 +756,8 @@ function connect(){
    if(!S.ov||S.ov.t!='chat')render();return}
   if(t=='rooms'){S.rooms=d.rooms;if(pendingRoomExit&&!d.rooms.some(r=>r.id===pendingRoomExit.id&&r.members.some(m=>m.uid===S.me.id)))pendingRoomExit=null;if(S.room&&!d.rooms.some(r=>r.id===S.room.id&&r.members.some(m=>m.uid===S.me.id))){cleanup();toast('Your room has ended or your seat expired')}if(!booted){booted=true;bootRoom()}if(S.room){const r=d.rooms.find(x=>x.id==S.room.id);if(r)S.room=r}if(S.ov&&S.ov.t=='all')paintOv();else if(!S.ov)render();return}
   if(t=='room:error')return toast(d.error);
-  if(t=='room:joined'){if(pendingRoomExit?.id===d.room.id)return;const same=S.room?.id===d.room.id;if(!same){roomEpoch++;micFailed=false;S.chat=[];S.react=0;S.muted=!!d.room.members.find(m=>m.uid===S.me.id)?.muted}else Object.keys(R.peers).forEach(drop);S.room=d.room;d.room.members.filter(m=>m.uid!=S.me.id).forEach(m=>conn(m.uid,true));closeModal();if(!H.sent){H.sent=true;hpush()}setOv({t:'room'});stopMeter();if(d.resumed)toast('Back in the room');syncMic();wsSend({type:'room:mute',on:S.muted});return}
+  if(t==='room:left'){if(S.room?.id===d.id)cleanup();return}
+  if(t=='room:joined'){if(pendingRoomExit?.id===d.room.id)return;const same=S.room?.id===d.room.id;if(!same){roomEpoch++;micFailed=false;S.chat=[];S.react=0;S.muted=!!d.room.members.find(m=>m.uid===S.me.id)?.muted}else Object.keys(R.peers).forEach(drop);S.roomLeaveToken=d.leaveToken||'';S.room=d.room;d.room.members.filter(m=>m.uid!=S.me.id).forEach(m=>conn(m.uid,true));closeModal();if(!H.sent){H.sent=true;hpush()}setOv({t:'room'});stopMeter();if(d.resumed)toast('Back in the room');syncMic();wsSend({type:'room:mute',on:S.muted});return}
   if(t=='room:state'){if(!S.room||pendingRoomExit?.id===d.room.id)return;S.room=d.room;checkInvite();syncMic();return}
   if(t=='room:declined'){toast(d.nick+' chose not to go on stage');return}
   if(t=='room:peer-left'){drop(d.uid);return}
@@ -774,7 +779,7 @@ async function loadFriends(notify){try{const prev=S.fr,f=await api('/friends');
  if(S.ov&&S.ov.t=='chat')paintOv();else if(S.ov&&(S.ov.t=='notif'||S.ov.t=='search'))paintOv();else if(!S.ov)keep(render)}catch(e){}}
 async function boot(me){S.me=me;dropOv();try{S.msgs=await api('/messages')}catch(e){S.msgs=[]}
  await loadUsers();await loadFriends();await loadFollows();connect();clearInterval(tmr);tmr=setInterval(()=>{loadUsers();loadFriends();loadFollows()},20000);S.tab='discover';render()}
-window.addEventListener('pagehide',()=>{if(S.room)cleanup()});
+window.addEventListener('pagehide',()=>{if(S.room){roomEpoch++;if(R.mic)R.mic.stop();roomCall('dismissRoom').catch(()=>roomCall('stopRoom').catch(()=>{}))}});
 if('serviceWorker' in navigator&&location.protocol!='file:')navigator.serviceWorker.register('/sw.js').catch(()=>{});
 (async()=>{if(S.tok){try{return await boot(await api('/me'))}catch(e){S.tok=null}}S.ov={t:'auth'};paintOv()})();
 </script>

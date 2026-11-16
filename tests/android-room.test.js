@@ -34,7 +34,7 @@ function harness(file, { android = true, capture = async () => stream(), native 
  const connectCode = html.slice(html.indexOf('let wsHeartbeat='), html.indexOf('async function loadUsers()'));
  Object.assign(context, {
   WebSocket: class { constructor() { this.readyState = 1; } close() { this.readyState = 3; } },
-  location: { protocol: 'https:', host: 'example.test' }, ws: null, retry: 0, booted: true,
+  location: { protocol: 'https:', host: 'example.test', origin: 'https://example.test' }, ws: null, retry: 0, booted: true,
   setInterval: () => 1, clearInterval() {}, setTimeout() {},
   conn() {}, setOv: value => { context.S.ov = value; }, stopMeter() {}, H: { sent: true },
   checkInvite() {}, bootRoom() {}, loadFriends() {}, loadFollows() {}, loadUsers() {},
@@ -123,6 +123,25 @@ for (const file of ['index.html', 'neon.html']) {
   h.context.doLeave('end'); h.context.connect();
   h.context.ws.onmessage({ data: JSON.stringify({ type: 'room:joined', room, resumed: true }) });
   assert.equal(h.context.S.room, null); assert.equal(h.context.R.mic, null);
+ });
+ test(`${file}: a departed peer is named once without blaming the remaining participant's network`, () => {
+  const h = harness(file), html = fs.readFileSync(path.join(root, 'public', file), 'utf8');
+  h.context.S.room.members.push({ uid: 'other', nick: 'Toto', role: 'speaker' });
+  h.context.ICE = [];
+  h.context.RTCPeerConnection = class { constructor() { this.connectionState = 'new'; } };
+  h.context.handle = nick => '@' + nick.toLowerCase();
+  h.run(html.slice(html.indexOf('const conn='), html.indexOf('const onSignal=')));
+  const peer = h.run("conn('other',false)"); peer.pc.connectionState = 'failed';
+  peer.pc.onconnectionstatechange(); peer.pc.onconnectionstatechange();
+  assert.equal(h.toasts.length, 1); assert(h.toasts[0].includes('@toto')); assert(h.toasts[0].includes('reconnect'));
+  assert(!h.toasts[0].includes('TURN')); assert(!h.toasts[0].includes('your network'));
+  delete h.context.R.peers.other; peer.pc.onconnectionstatechange(); assert.equal(h.toasts.length, 1);
+ });
+ test(`${file}: native membership confirmation cleans only the matching room`, async () => {
+  const h = harness(file); await h.context.syncMic(); h.context.connect();
+  h.context.ws.onmessage({ data: JSON.stringify({ type: 'room:left', id: 'old-room' }) }); assert(h.context.S.room);
+  h.context.ws.onmessage({ data: JSON.stringify({ type: 'room:left', id: 'room1' }) }); await tick();
+  assert.equal(h.context.S.room, null); assert.equal(h.context.R.mic, null); assert.equal(h.context.S.roomLeaveToken, '');
  });
  // Parse every inline script too, including bootstrap and the two independent designs.
  test(`${file}: every inline script parses`, () => {
