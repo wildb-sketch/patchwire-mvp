@@ -4,13 +4,15 @@
   "webDir": "www",
   "backgroundColor": "#000000",
   "server": {
-    "androidScheme": "https",
-    "allowNavigation": [
-      "*"
-    ]
+    "url": "https://patchwire.whassabi.workers.dev/neon",
+    "cleartext": false
   },
   "android": {
     "appendUserAgent": "PatchwireApp",
-    "allowMixedContent": false
+    "allowMixedContent": false,
+    "minWebViewVersion": 95
+  },
+  "plugins": {
+    "RoomPlugin": {}
   }
 }

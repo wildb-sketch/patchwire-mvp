@@ -21,6 +21,14 @@ jobs:
           java-version: 17
       - run: npm install
       - run: npm run prepare-android
+      - name: Copy google-services.json
+        run: |
+          if [ -f "../google-services.json" ]; then
+            cp ../google-services.json android/app/google-services.json
+            echo "google-services.json copied"
+          else
+            echo "No google-services.json found, skipping FCM setup"
+          fi
       - run: npm run apk
       - uses: actions/upload-artifact@v4
         with:

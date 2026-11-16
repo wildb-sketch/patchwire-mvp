@@ -12,11 +12,13 @@ button{width:100%;margin-top:12px;padding:15px;border:0;border-radius:999px;back
 <p id="msg">Enter the address of your Patchwire server.</p>
 <input id="u" type="url" inputmode="url" placeholder="https://your-server.trycloudflare.com" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Server address">
 <button id="go">Connect</button><div id="e" role="alert"></div>
-<small>Voice needs a secure (https) address. You can change the server later from Profile.</small>
+<small>Opens your Patchwire server automatically. To use a different one, change it here or later from Profile.</small>
 </main>
 <script>
-const $=s=>document.querySelector(s),q=new URLSearchParams(location.search);let saved=null;
+const $=s=>document.querySelector(s),q=new URLSearchParams(location.search);const DEFAULT_SERVER='https://patchwire.whassabi.workers.dev';
+let saved=null;
 try{saved=localStorage.getItem('pw_server')}catch(e){}
+saved=saved||DEFAULT_SERVER;
 function norm(v){try{const x=new URL(/^https?:\/\//.test(v)?v:'https://'+v);if(x.protocol!=='https:')return null;return x.origin}catch(e){return null}}
 async function connect(v,auto){
   const o=norm(v);if(!o){$('#e').textContent='Enter a valid https address.';return}

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "141563303154",
+    "project_id": "patchwire-c4a0c",
+    "storage_bucket": "patchwire-c4a0c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:141563303154:android:771c1e9e02cd0ec2b0ec6b",
+        "android_client_info": {
+          "package_name": "com.patchwire.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCII95Gg-aet_sukDXpzgKkxodKqFvD3vA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

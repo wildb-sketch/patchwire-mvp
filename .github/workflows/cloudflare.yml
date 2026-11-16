@@ -1,9 +1,6 @@
 name: Deploy to Cloudflare
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: ['cloudflare/**', 'public/**', '.github/workflows/cloudflare.yml']
 jobs:
   deploy:
     runs-on: ubuntu-latest

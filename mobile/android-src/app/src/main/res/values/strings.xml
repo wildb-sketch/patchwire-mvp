@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Patchwire</string>
+    <string name="title_activity_main">Patchwire</string>
+    <string name="package_name">com.patchwire.app</string>
+    <string name="custom_url_scheme">patchwire</string>
+</resources>

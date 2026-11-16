@@ -2,6 +2,9 @@
 
 The Android app is a thin shell (Capacitor) around the Patchwire web app. It asks for your server address once, then opens it. The server (`npm start` in the main folder) must be reachable over **https**, because voice and the microphone need a secure address.
 
+## 0. Already set up
+The app opens `https://patchwire.whassabi.workers.dev` by default. Skip to step 2b to build it. Use Profile > Change server to point it somewhere else.
+
 ## 1. Get an https address for the server
 Best: deploy `../cloudflare` (see its README) and use the permanent `https://patchwire.YOURNAME.workers.dev` address it prints. For a quick test you can instead use a tunnel, below.
 

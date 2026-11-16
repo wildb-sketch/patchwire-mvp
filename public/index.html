@@ -382,7 +382,7 @@ function mini(){
  $('#msd').onclick=()=>setDeaf(!S.deaf);$('#mx').onclick=leaveRoom;
 }
 function setDeaf(v){S.deaf=v;Object.values(R.peers).forEach(p=>{if(p.audio)p.audio.muted=S.deaf});if(S.ov&&S.ov.t=='room')paintOv();else mini()}
-function setMute(v){S.muted=v;if(R.mic)R.mic.enabled=!S.muted;wsSend({type:'room:mute',on:v});if(S.ov&&S.ov.t=='room')paintOv();else mini()}
+function setMute(v){S.muted=v;if(R.mic)R.mic.enabled=!S.muted;wsSend({type:'room:mute',on:v});nativeRoom('mute',v);if(S.ov&&S.ov.t=='room')paintOv();else mini()}
 
 /* ---------- overlays ---------- */
 function openOv(t,id){if(S.ov&&S.ov.t=='live'&&t!='live')stopMeter();if(S.rec)stopRec(false);S.menu=false;if(!S.ov)hpush();S.ov={t,id};if(t=='chat'){S.read[id]=Date.now();saveRead()}if(t=='search'){S.sq='';S.sres=[]}paintOv();mini()}
@@ -649,7 +649,8 @@ async function syncMic(){const sp=iSpeak();
  if(R.mic)R.mic.enabled=!S.muted;
  Object.values(R.peers).forEach(p=>setTrack(p.pc));
  if(S.ov&&S.ov.t=='room')paintOv();else render()}
-function cleanup(){S.invAsk=false;if($('#mb [data-ok]'))closeModal();Object.keys(R.peers).forEach(drop);if(R.mic){R.mic.stop();R.mic=null}if(S.me)delete R.an[S.me.id];S.room=null;S.chat=[];S.react=0;S.muted=false;S.deaf=false;if(S.ov&&S.ov.t=='room'){dropOv()}render()}
+function nativeRoom(action,val){try{if(!window.RoomPlugin)return;if(action==='start')window.RoomPlugin.startRoom({title:String(val||'Live room')});else if(action==='stop')window.RoomPlugin.stopRoom({});else if(action==='mute')window.RoomPlugin.setMuted({muted:!!val})}catch(e){}}
+function cleanup(){S.invAsk=false;if($('#mb [data-ok]'))closeModal();nativeRoom('stop');Object.keys(R.peers).forEach(drop);if(R.mic){R.mic.stop();R.mic=null}if(S.me)delete R.an[S.me.id];S.room=null;S.chat=[];S.react=0;S.muted=false;S.deaf=false;if(S.ov&&S.ov.t=='room'){dropOv()}render()}
 const bootRoom=async()=>{try{const r=await fetch('/api/ice',{headers:{Authorization:'Bearer '+S.tok}});if(r.ok)ICE=await r.json()}catch(e){}
  let m=/^#room=([0-9a-f]{8})$/.exec(location.hash);if(m){history.replaceState(null,'',location.pathname);wsSend({type:'room:join',id:m[1]});return}
  m=/^#u=([0-9a-f]{12})$/.exec(location.hash);if(m){history.replaceState(null,'',location.pathname);openProfile(m[1])}};
@@ -669,7 +670,7 @@ function connect(){
    if(!S.ov||S.ov.t!='chat')render();return}
   if(t=='rooms'){S.rooms=d.rooms;if(!booted){booted=true;bootRoom()}if(S.room){const r=d.rooms.find(x=>x.id==S.room.id);if(r)S.room=r}if(S.ov&&S.ov.t=='all')paintOv();else if(!S.ov)render();return}
   if(t=='room:error')return toast(d.error);
-  if(t=='room:joined'){S.room=d.room;S.chat=[];S.react=0;S.muted=false;d.room.members.filter(m=>m.uid!=S.me.id).forEach(m=>conn(m.uid,true));closeModal();if(!H.sent){H.sent=true;hpush()}setOv({t:'room'});stopMeter();if(d.resumed)toast('Back in the room');syncMic();return}
+  if(t=='room:joined'){S.room=d.room;S.chat=[];S.react=0;S.muted=false;d.room.members.filter(m=>m.uid!=S.me.id).forEach(m=>conn(m.uid,true));closeModal();if(!H.sent){H.sent=true;hpush()}setOv({t:'room'});stopMeter();if(d.resumed)toast('Back in the room');syncMic();nativeRoom('start',d.room.title);return}
   if(t=='room:state'){S.room=d.room;checkInvite();syncMic();return}
   if(t=='room:declined'){toast(d.nick+' chose not to go on stage');return}
   if(t=='room:peer-left'){drop(d.uid);return}

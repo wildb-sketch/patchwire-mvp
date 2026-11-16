@@ -1,10 +1,11 @@
 {
   "name": "patchwire-mobile",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "scripts": {
-    "prepare-android": "cap add android && node scripts/patch-manifest.js && cap sync android",
-    "apk": "cd android && ./gradlew assembleDebug"
+    "prepare-android": "cap add android || true && node scripts/patch-manifest.js && cap sync android",
+    "apk": "cd android && ./gradlew assembleDebug",
+    "apk-release": "cd android && ./gradlew assembleRelease"
   },
   "dependencies": {
     "@capacitor/android": "^6.2.0",

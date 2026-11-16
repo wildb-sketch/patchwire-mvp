@@ -21,7 +21,7 @@ The repo includes `.github/workflows/cloudflare.yml`. After you put the project 
 1. In the Cloudflare dashboard open My Profile > API Tokens > Create Token and use the "Edit Cloudflare Workers" template. Copy the token.
 2. Copy your Account ID (shown on the Workers & Pages overview page).
 3. In your GitHub repo open Settings > Secrets and variables > Actions and add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
-4. Open the Actions tab, choose "Deploy to Cloudflare" and press Run workflow. Every later push to `main` that changes `cloudflare/` or `public/` deploys again.
+4. Open the Actions tab, choose "Deploy to Cloudflare" and press Run workflow. It deploys only when you press Run workflow (add a `push:` trigger to the workflow file if you want it automatic).
 Keep the token only in GitHub secrets, never in chat, and delete it from Cloudflare if you stop using it.
 
 ## Update later
