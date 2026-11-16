@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -27,6 +28,7 @@ import java.lang.ref.WeakReference;
 })
 public class RoomPlugin extends Plugin {
     private boolean notificationAsked = false;
+    private boolean destroyed = false;
     private static WeakReference<RoomPlugin> current = new WeakReference<>(null);
 
     @Override public void load() { current = new WeakReference<>(this); }
@@ -63,6 +65,7 @@ public class RoomPlugin extends Plugin {
     }
 
     private void startWhenReady(PluginCall call, int attempt) {
+        if (destroyed) { call.reject("Room activity was closed.", "ACTIVITY_CLOSED"); return; }
         boolean microphone = Boolean.TRUE.equals(call.getBoolean("microphone", false));
         if ((!RoomService.active || (microphone && !RoomService.microphone)) && !visible()) {
             // Permission results can arrive just before Activity.onResume. Wait for that transition,
@@ -89,6 +92,16 @@ public class RoomPlugin extends Plugin {
     }
 
     private void startService(PluginCall call) {
+        // Only send the in-memory session to the HTTPS origin currently hosting this WebView.
+        Uri origin = Uri.parse(call.getString("serverUrl", ""));
+        Uri page = Uri.parse(getBridge().getWebView().getUrl());
+        if (!"https".equals(origin.getScheme()) || origin.getAuthority() == null || origin.getUserInfo() != null ||
+            !origin.getScheme().equals(page.getScheme()) || !origin.getAuthority().equals(page.getAuthority()) ||
+            origin.getQuery() != null || origin.getFragment() != null ||
+            !(origin.getPath() == null || origin.getPath().isEmpty() || "/".equals(origin.getPath()))) {
+            call.reject("Room server does not match the app page.", "INVALID_ROOM_SERVER");
+            return;
+        }
         Handler handler = new Handler(Looper.getMainLooper());
         final boolean[] finished = {false};
         Runnable timeout = () -> {
@@ -122,7 +135,11 @@ public class RoomPlugin extends Plugin {
             .putExtra("speaking", Boolean.TRUE.equals(call.getBoolean("speaking", false)))
             .putExtra("microphone", Boolean.TRUE.equals(call.getBoolean("microphone", false)))
             .putExtra(RoomService.EXTRA_MUTED, Boolean.TRUE.equals(call.getBoolean("muted", true)))
-            .putExtra("receiver", receiver);
+            .putExtra("receiver", receiver)
+            .putExtra("serverUrl", origin.toString())
+            .putExtra("token", call.getString("token", ""))
+            .putExtra("roomId", call.getString("roomId", ""))
+            .putExtra("leaveToken", call.getString("leaveToken", ""));
         try {
             handler.postDelayed(timeout, 8000);
             if (Build.VERSION.SDK_INT >= 26 && !RoomService.active) getContext().startForegroundService(intent);
@@ -132,6 +149,11 @@ public class RoomPlugin extends Plugin {
             handler.removeCallbacks(timeout);
             call.reject("Could not start room audio: " + e.getMessage(), "SERVICE_START_FAILED", e);
         }
+    }
+
+    @PluginMethod public void dismissRoom(PluginCall call) {
+        RoomService.dismiss(getContext());
+        call.resolve();
     }
 
     @PluginMethod public void stopRoom(PluginCall call) {
@@ -149,7 +171,12 @@ public class RoomPlugin extends Plugin {
     }
 
     @Override protected void handleOnDestroy() {
-        current.clear();
-        getContext().stopService(new Intent(getContext(), RoomService.class));
+        destroyed = true;
+        if (current.get() == this) {
+            current.clear();
+            // A replaced Activity must not dismiss the new Activity's room service.
+            // The service, not the destroyed WebView, performs the final membership request.
+            RoomService.dismiss(getContext());
+        }
     }
 }

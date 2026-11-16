@@ -38,9 +38,4 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
-    // The room transport lives in this WebView. Never leave a phantom service after its destruction.
-    @Override public void onDestroy() {
-        stopService(new Intent(this, RoomService.class));
-        super.onDestroy();
-    }
 }

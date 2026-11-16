@@ -73,6 +73,15 @@ async function api(req, res, url) {
   const tok = (req.headers.authorization || '').replace('Bearer ', ''), me = authUser(tok);
   if (!me) return send(res, 401, { error: 'Please log in' });
   me.ts = Date.now();
+  if (route === 'POST /api/room/leave') {
+    const room = rooms.get(roomOf.get(me.id)), member = room?.members.get(me.id);
+    if (room && room.id === b.roomId && typeof b.leaveToken === 'string' &&
+        member?.leaveToken && member.leaveToken === b.leaveToken) {
+      sendTo(me.id, { type: 'room:left', id: room.id });
+      leave(me.id);
+    }
+    return send(res, 200, {});
+  }
   if (route === 'GET /api/me') return send(res, 200, pub(me));
   if (route === 'PUT /api/me') {
     Object.assign(me, fields({ ...me, ...b }));
@@ -234,6 +243,7 @@ const sendTo = (uid, o) => { for (const c of online.get(uid) || []) c.send(JSON.
 const bcastRooms = () => { const o = JSON.stringify({ type: 'rooms', rooms: [...rooms.values()].map(view) }); for (const set of online.values()) for (const c of set) c.send(o); };
 const roomUpdate = r => { for (const u of r.members.keys()) sendTo(u, { type: 'room:state', room: view(r) }); };
 function leave(uid) {
+  clearTimeout(grace.get(uid)); grace.delete(uid);
   const id = roomOf.get(uid); if (!id) return; roomOf.delete(uid);
   const r = rooms.get(id); if (!r) return; r.members.delete(uid);
   if (!r.members.size) { rooms.delete(id); return bcastRooms(); }
@@ -260,7 +270,8 @@ function roomMsg(me, d) {
     rooms.set(r.id, r); roomOf.set(me.id, r.id);
     D.feed.push({ uid: me.id, rid: r.id, title, topic: r.topic, ts: Date.now() }); if (D.feed.length > 300) D.feed.splice(0, D.feed.length - 300);
     me.hosted = (me.hosted || 0) + 1; save();
-    sendTo(me.id, { type: 'room:joined', room: view(r) }); return bcastRooms();
+    r.members.get(me.id).leaveToken = crypto.randomBytes(16).toString('hex');
+    sendTo(me.id, { type: 'room:joined', room: view(r), leaveToken: r.members.get(me.id).leaveToken }); return bcastRooms();
   }
   if (d.type === 'room:join') {
     const r = rooms.get(d.id); if (!r) return err('That room has ended');
@@ -269,7 +280,8 @@ function roomMsg(me, d) {
     if (r.members.size >= MAXR) return err('This room is full (max ' + MAXR + ')');
     if (cur && !releaseCur(me, cur, err)) return;
     r.members.set(me.id, { role: 'listener', hand: false }); roomOf.set(me.id, r.id);
-    sendTo(me.id, { type: 'room:joined', room: view(r) }); roomUpdate(r); return bcastRooms();
+    r.members.get(me.id).leaveToken = crypto.randomBytes(16).toString('hex');
+    sendTo(me.id, { type: 'room:joined', room: view(r), leaveToken: r.members.get(me.id).leaveToken }); roomUpdate(r); return bcastRooms();
   }
   if (!cur) return;
   if (d.type === 'room:leave') {
@@ -335,7 +347,10 @@ wss.on('connection', (ws, req) => {
   ws.send(JSON.stringify({ type: 'rooms', rooms: [...rooms.values()].map(view) }));
   clearTimeout(grace.get(me.id)); grace.delete(me.id);
   const seat = rooms.get(roomOf.get(me.id));
-  if (seat) ws.send(JSON.stringify({ type: 'room:joined', room: view(seat), resumed: true }));
+  if (seat) {
+    seat.members.get(me.id).leaveToken = crypto.randomBytes(16).toString('hex');
+    ws.send(JSON.stringify({ type: 'room:joined', room: view(seat), resumed: true, leaveToken: seat.members.get(me.id).leaveToken }));
+  }
   ws.alive = true; ws.on('pong', () => (ws.alive = true));
   ws.on('message', raw => {
     let d; try { d = JSON.parse(raw); } catch { return; }

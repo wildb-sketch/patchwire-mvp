@@ -137,6 +137,15 @@ export class Hub extends DurableObject {
     const tok = (request.headers.get('authorization') || '').replace('Bearer ', ''), me = this.authUser(tok);
     if (!me) return json(401, { error: 'Please log in' });
     me.ts = Date.now();
+    if (route === 'POST /api/room/leave') {
+      const room = this.rooms.get(this.roomOf.get(me.id)), member = room?.members.get(me.id);
+      if (room && room.id === b.roomId && typeof b.leaveToken === 'string' &&
+          member?.leaveToken && member.leaveToken === b.leaveToken) {
+        this.sendTo(me.id, { type: 'room:left', id: room.id });
+        this.leave(me.id);
+      }
+      return json(200, {});
+    }
     if (route === 'GET /api/me') return json(200, this.pub(me));
     if (route === 'PUT /api/me') {
       Object.assign(me, fields({ ...me, ...b }));
@@ -263,6 +272,7 @@ export class Hub extends DurableObject {
 
   // ---------- voice rooms (in memory; WebRTC mesh, signaling relayed over the WebSocket) ----------
   leave(uid) {
+    clearTimeout(this.grace.get(uid)); this.grace.delete(uid);
     const id = this.roomOf.get(uid); if (!id) return; this.roomOf.delete(uid);
     const r = this.rooms.get(id); if (!r) return; r.members.delete(uid);
     if (!r.members.size) { this.rooms.delete(id); return this.bcastRooms(); }
@@ -290,7 +300,8 @@ export class Hub extends DurableObject {
       const fe = { uid: me.id, rid: r.id, title, topic: r.topic, ts: Date.now() }; D.feed.push(fe); this.put('feed', fe.ts + ':' + fe.rid, fe);
       if (D.feed.length > 300) for (const o of D.feed.splice(0, D.feed.length - 300)) this.del('feed', o.ts + ':' + o.rid);
       me.hosted = (me.hosted || 0) + 1; this.put('user', me.id, me);
-      this.sendTo(me.id, { type: 'room:joined', room: this.view(r) }); return this.bcastRooms();
+      r.members.get(me.id).leaveToken = hex(16);
+      this.sendTo(me.id, { type: 'room:joined', room: this.view(r), leaveToken: r.members.get(me.id).leaveToken }); return this.bcastRooms();
     }
     if (d.type === 'room:join') {
       const r = this.rooms.get(d.id); if (!r) return err('That room has ended');
@@ -299,7 +310,8 @@ export class Hub extends DurableObject {
       if (r.members.size >= MAXR) return err('This room is full (max ' + MAXR + ')');
       if (cur && !this.releaseCur(me, cur, err)) return;
       r.members.set(me.id, { role: 'listener', hand: false }); this.roomOf.set(me.id, r.id);
-      this.sendTo(me.id, { type: 'room:joined', room: this.view(r) }); this.roomUpdate(r); return this.bcastRooms();
+      r.members.get(me.id).leaveToken = hex(16);
+      this.sendTo(me.id, { type: 'room:joined', room: this.view(r), leaveToken: r.members.get(me.id).leaveToken }); this.roomUpdate(r); return this.bcastRooms();
     }
     if (!cur) return;
     if (d.type === 'room:leave') {
@@ -368,7 +380,10 @@ export class Hub extends DurableObject {
     this.safe(ws, JSON.stringify({ type: 'rooms', rooms: [...this.rooms.values()].map(r => this.view(r)) }));
     clearTimeout(this.grace.get(me.id)); this.grace.delete(me.id);
     const seat = this.rooms.get(this.roomOf.get(me.id));
-    if (seat) this.safe(ws, JSON.stringify({ type: 'room:joined', room: this.view(seat), resumed: true }));
+    if (seat) {
+      seat.members.get(me.id).leaveToken = hex(16);
+      this.safe(ws, JSON.stringify({ type: 'room:joined', room: this.view(seat), resumed: true, leaveToken: seat.members.get(me.id).leaveToken }));
+    }
     ws.addEventListener('message', ev => {
       const raw = ev.data; if (typeof raw !== 'string' || raw.length > 16384) return;
       let d; try { d = JSON.parse(raw); } catch { return; }

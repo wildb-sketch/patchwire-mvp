@@ -9,10 +9,15 @@ import android.media.AudioManager;
 import android.net.wifi.WifiManager;
 import android.os.*;
 import androidx.core.app.NotificationCompat;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import org.json.JSONObject;
 
 /** Owns the Android foreground lifetime; WebRTC and its microphone track remain in the WebView. */
 public class RoomService extends Service {
     public static final String ACTION_START = "com.patchwire.app.ROOM_START";
+    public static final String ACTION_DISMISS = "com.patchwire.app.ROOM_DISMISS";
     public static final String ACTION_STATE = "com.patchwire.app.ROOM_STATE";
     public static final String ACTION_MUTE = "com.patchwire.app.ROOM_MUTE";
     public static final String ACTION_LEAVE = "com.patchwire.app.ROOM_LEAVE";
@@ -22,6 +27,17 @@ public class RoomService extends Service {
     static final int NOTIF_ID = 1001;
     static volatile boolean active = false;
     static volatile boolean microphone = false;
+
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private String serverUrl = "", token = "", roomId = "", leaveToken = "";
+    private boolean dismissing = false;
+    private int sessionGeneration = 0;
+
+    static void dismiss(Context context) {
+        if (!active) return;
+        try { context.startService(new Intent(context, RoomService.class).setAction(ACTION_DISMISS)); }
+        catch (RuntimeException ignored) { /* Service already stopped: use server disconnect grace. */ }
+    }
 
     private AudioManager audio;
     private NotificationManager notifications;
@@ -56,6 +72,7 @@ public class RoomService extends Service {
         // The WebView cannot recover its transport after process death. Do not resurrect a fake call.
         if (intent == null) { stopSelf(); return START_NOT_STICKY; }
         String action = intent.getAction();
+        if (ACTION_DISMISS.equals(action)) { leaveNatively(); return START_NOT_STICKY; }
         if (ACTION_MUTE.equals(action) || ACTION_LEAVE.equals(action)) {
             if (!active || !RoomPlugin.command(ACTION_LEAVE.equals(action) ? "leave" : "mute",
                     intent.getBooleanExtra(EXTRA_MUTED, true))) stopSelf();
@@ -71,6 +88,15 @@ public class RoomService extends Service {
         if (!ACTION_START.equals(action)) { stopSelf(); return START_NOT_STICKY; }
         ResultReceiver receiver = intent.getParcelableExtra("receiver");
         try {
+            String nextLeaveToken = intent.getStringExtra("leaveToken");
+            if (!leaveToken.equals(nextLeaveToken)) {
+                sessionGeneration++;
+                dismissing = false;
+            } else if (dismissing) throw new IllegalStateException("Room is closing");
+            serverUrl = intent.getStringExtra("serverUrl");
+            token = intent.getStringExtra("token");
+            roomId = intent.getStringExtra("roomId");
+            leaveToken = nextLeaveToken == null ? "" : nextLeaveToken;
             title = intent.getStringExtra(EXTRA_TITLE);
             muted = intent.getBooleanExtra(EXTRA_MUTED, true);
             speaking = intent.getBooleanExtra("speaking", false);
@@ -113,12 +139,54 @@ public class RoomService extends Service {
     }
 
     @Override public void onTaskRemoved(Intent rootIntent) {
-        RoomPlugin.command("leave", true);
-        stopSelf();
+        // Android can destroy the WebView before delivering its last JavaScript event.
+        leaveNatively();
         super.onTaskRemoved(rootIntent);
     }
 
+    private void leaveNatively() {
+        if (dismissing) return;
+        dismissing = true;
+        if (!active || serverUrl == null || token == null || roomId == null || leaveToken.isEmpty()) {
+            stopSelf();
+            return;
+        }
+        final int generation = sessionGeneration;
+        final String endpoint = serverUrl + "/api/room/leave", auth = token, id = roomId, lease = leaveToken;
+        Runnable finish = () -> {
+            // A rapid reopen has a new lease: its room and service must survive this old request.
+            if (generation == sessionGeneration && dismissing) stopSelf();
+        };
+        handler.postDelayed(finish, 7000);
+        new Thread(() -> {
+            HttpURLConnection connection = null;
+            try {
+                connection = (HttpURLConnection) new URL(endpoint).openConnection();
+                connection.setInstanceFollowRedirects(false);
+                connection.setConnectTimeout(2500);
+                connection.setReadTimeout(2500);
+                connection.setRequestMethod("POST");
+                connection.setRequestProperty("Authorization", "Bearer " + auth);
+                connection.setRequestProperty("Content-Type", "application/json");
+                connection.setDoOutput(true);
+                byte[] body = new JSONObject().put("roomId", id).put("leaveToken", lease)
+                    .toString().getBytes(StandardCharsets.UTF_8);
+                connection.setFixedLengthStreamingMode(body.length);
+                try (java.io.OutputStream output = connection.getOutputStream()) { output.write(body); }
+                connection.getResponseCode();
+            } catch (Exception ignored) {
+                // Offline or force-killed devices still use the server's normal disconnect grace.
+            } finally {
+                if (connection != null) connection.disconnect();
+                handler.post(finish);
+            }
+        }, "Whassabi-RoomLeave").start();
+    }
+
     @Override public void onDestroy() {
+        sessionGeneration++;
+        handler.removeCallbacksAndMessages(null);
+        token = ""; leaveToken = "";
         active = false;
         microphone = false;
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();

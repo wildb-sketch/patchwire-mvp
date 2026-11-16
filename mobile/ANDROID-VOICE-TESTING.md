@@ -22,7 +22,7 @@ From repository root: `npm ci && npm test`. Tests execute both clients' room bri
 
 From `mobile/`: `npm ci && npm run prepare-android && npm run apk`. Requires JDK 17 and Android SDK 34. `cd android && ./gradlew lintDebug` checks native integration. The preparation script can be rerun and does not hide Capacitor failures. GitHub Actions runs regression tests and builds an APK on relevant PRs, main changes, and manual dispatch.
 
-Validation in the development environment: 32 tests passed; JDK 17 / SDK 34 `assembleDebug` and `lintDebug` passed (0 lint errors, 22 warnings, including generated template/resource warnings and the intentionally service-scoped wake lock). Cloudflare `wrangler deploy --dry-run` passed without deploying. Physical microphone transmission, Android permission dialogs, and lock-screen notification actions remain unverified on hardware.
+Validation in the development environment: 38 tests passed; JDK 17 / SDK 34 `assembleDebug` and `lintDebug` passed (0 lint errors, 22 warnings, including generated template/resource warnings and the intentionally service-scoped wake lock). Cloudflare `wrangler deploy --dry-run` passed without deploying. Physical microphone transmission, Android permission dialogs, and lock-screen notification actions remain unverified on hardware.
 
 ## Real-device acceptance (two participants)
 
@@ -38,3 +38,13 @@ Use Android 13 and 14+ if available, including the original affected phone. Reco
 8. Smoke-test chat, DMs/voice messages, room creation/settings, stage invites, minimization/back gesture, and both UI designs.
 
 Useful connected-device checks: `adb shell dumpsys activity services com.patchwire.app`, `adb shell dumpsys notification`, `adb shell dumpsys power`, and `adb logcat` for foreground-service security exceptions or capture errors. Android may hide notification actions on a secure lock screen until authentication; OEM battery policies and deep Doze behavior require physical testing. WebRTC remains peer-to-peer and requires an existing TURN configuration on networks that block direct audio; a microphone permission fix cannot repair a blocked ICE path.
+
+## Swipe-away cleanup
+
+The recording exposed two separate issues: each remaining peer locally raised a generic network/TURN error when the dismissed participant's audio link failed, and the native service tried to leave through a JavaScript listener in a WebView that Android could already be destroying.
+
+Task dismissal and Activity destruction now ask the existing service to send an authenticated HTTPS leave request directly. It waits at most seven seconds before stopping, holds credentials only in memory, does not follow redirects, and only accepts the current WebView's HTTPS origin. Normal Home/app switching and screen locking do not invoke this dismissal path. Every room join/reconnect issues a private leave token; the server rejects stale leases so a delayed old request cannot remove a rapidly reopened session. Explicit in-app Leave still follows the existing host confirmation flow. Both backends have equivalent cleanup endpoints and cancel the departed seat's grace timer.
+
+If Android force-kills the process without any lifecycle callback, or the phone is offline, immediate network cleanup cannot be guaranteed: the normal 45-second disconnect grace remains the fallback. Other participants now see one message naming whose audio disconnected and saying it is waiting for reconnection, rather than suggesting their own network needs TURN. Removed peer connections cannot emit late warnings.
+
+Repeat the original recording test: while another device watches the room, swipe the Android task away, verify prompt membership removal without the TURN warning, then rapidly reopen and confirm an old leave request cannot eject the new session. Recheck 10-minute locked-screen audio to ensure ordinary background operation is unchanged.
