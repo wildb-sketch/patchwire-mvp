@@ -172,8 +172,11 @@ public class RoomPlugin extends Plugin {
 
     @Override protected void handleOnDestroy() {
         destroyed = true;
-        if (current.get() == this) current.clear();
-        // The service, not the destroyed WebView, performs the final membership request.
-        RoomService.dismiss(getContext());
+        if (current.get() == this) {
+            current.clear();
+            // A replaced Activity must not dismiss the new Activity's room service.
+            // The service, not the destroyed WebView, performs the final membership request.
+            RoomService.dismiss(getContext());
+        }
     }
 }
