@@ -1,0 +1,40 @@
+# Android voice room reliability
+
+## Diagnosis
+
+The tracked Android project is a source overlay: `prepare-android` generates the actual manifest and Gradle project (the generated `mobile/android/` is ignored). Both `public/index.html` and `public/neon.html` are remotely served web clients; `mobile/www/index.html` is only the server launcher. Capacitor loads the Worker URL from `capacitor.config.json`.
+
+The frontend called `window.RoomPlugin`, which is not the registered Capacitor plugin API. Errors were swallowed, so no foreground service or notification started. The service itself had no wake lock, notification permission request, or callback to the WebRTC client. Its Mute changed only notification state, and Leave stopped only the service. It was sticky even though it cannot restore a WebView's peer connections after process death. Mic capture also raced on repeated room updates; errors were all mislabeled as browser permission failures. Every WebSocket close stopped microphone tracks and the service immediately.
+
+The standalone registered `RoomPlugin` now uses Capacitor's injected `nativePromise` / `addListener` API, including on remote pages. Room start waits for native confirmation that `startForeground` succeeded. Listeners use `mediaPlayback`; microphone mode requires `RECORD_AUDIO` and a visible activity when first enabled, as required by Android 14. Accepting a stage invite or requesting to speak prepares microphone eligibility while visible. Notification permission on Android 13+ is separate; denied or disabled notifications are reported without blocking voice. CPU and Wi-Fi locks are held only for the active service lifetime. Capacitor 6 defaults to keeping the WebView running; its existing WebChromeClient handles origin-level capture after the runtime permission is granted. No replacement WebChromeClient or blanket permission grant is installed.
+
+Capture is serialized, stale capture results are stopped, and permission failure leaves the speaker muted with an explicit Unmute retry. Both designs keep their current UI. Notification mute changes the actual track, signaling state, and notification; listener notifications omit microphone controls. Notification Leave immediately leaves: the server atomically hands a host room to the first current co-host, or ends the room if none exists. This also works when the membership changed during a disconnect. The in-app host handover confirmation remains unchanged. Brief signaling disconnects preserve audio and mute state; reconnect resynchronizes membership and peers. A heartbeat detects stale signaling connections. Process death, task dismissal, page navigation, or a real room exit releases the service; a killed transport is never represented as an active call.
+
+## Install and deploy together
+
+This fix spans the APK **and remotely hosted frontend / signaling code**. Installing only a new APK against the old deployed pages will still run the old broken JavaScript. Deploy this branch's `public/` and `cloudflare/src/worker.js` to the test Worker, then install the APK from the same revision. A refreshed page is required; the existing service worker is network-first. Production deployment is not part of this change.
+
+The debug signing key should match the installed app when updating. Otherwise uninstall first (which also resets Android permissions). A self-hosted Node deployment uses the updated `server.js`.
+
+## Automated checks
+
+From repository root: `npm ci && npm test`. Tests execute both clients' room bridge/capture code with mocked Android and media devices, and exercise real Node WebSocket signaling. They cover concurrent capture, stale capture after leave/demotion, permission failure and retry, notification controls, listener-only mode, missing saved devices, web browser fallback, service failure, repeatable manifest generation, heartbeat, muted seat recovery, host handover, and room end. They do not emulate Android power management or actual audio.
+
+From `mobile/`: `npm ci && npm run prepare-android && npm run apk`. Requires JDK 17 and Android SDK 34. `cd android && ./gradlew lintDebug` checks native integration. The preparation script can be rerun and does not hide Capacitor failures. GitHub Actions runs regression tests and builds an APK on relevant PRs, main changes, and manual dispatch.
+
+Validation in the development environment: 32 tests passed; JDK 17 / SDK 34 `assembleDebug` and `lintDebug` passed (0 lint errors, 22 warnings, including generated template/resource warnings and the intentionally service-scoped wake lock). Cloudflare `wrangler deploy --dry-run` passed without deploying. Physical microphone transmission, Android permission dialogs, and lock-screen notification actions remain unverified on hardware.
+
+## Real-device acceptance (two participants)
+
+Use Android 13 and 14+ if available, including the original affected phone. Record Android version, manufacturer, and Android System WebView version. Test both designs with the same build and web revision.
+
+1. Clean install: join as listener without granting microphone. Verify persistent "Listening" notification and received audio. Request to speak, allow microphone, and verify the other participant hears you. Repeat with microphone denied, then granted through app settings and Unmute. Try a stale hardware selection or a disconnected headset.
+2. Host or speak, lock the screen for at least 10 minutes (beyond the original 30–40 seconds), and have the remote participant verify continuous **received speech**, not merely an illuminated mic icon. Repeat while using another app, on Wi-Fi and mobile data, with Battery Saver, and after 30 minutes idle.
+3. While locked, tap notification Mute: remote speech must stop, the button must become Unmute, and room state must show muted. Tap Unmute and verify speech resumes without opening the app. Open the app and verify UI state agrees. Repeat mute/unmute in-app while checking the notification.
+4. While locked, tap Leave as listener, co-host, sole host, host with a co-host, and host with listeners only. Verify tracks stop, remote membership updates, the service/notification disappears, host handover/end follows the policy above, and reopening does not silently rejoin.
+5. Deny notification permission, or disable just the Live room channel. Verify a clear message, no claim that the microphone is denied, and continued room audio. Re-enable in Android app settings and rejoin to check controls.
+6. Interrupt Wi-Fi, switch Wi-Fi/mobile data, and reconnect within 45 seconds. Verify mute state is retained, the seat is recovered, and peers hear each other. Stay disconnected past the server grace period, reconnect, and verify the expired seat/service is cleaned up. Leave during disconnection and verify no automatic room resurrection.
+7. Accept/demote speakers, switch microphone, leave while the permission dialog is open, end a room remotely, receive a phone call, dismiss the task, and force-stop the app. Verify no unintended unmute, leaked mic indicator, lock, or phantom service. A phone call taking audio focus mutes the room; explicitly Unmute afterward.
+8. Smoke-test chat, DMs/voice messages, room creation/settings, stage invites, minimization/back gesture, and both UI designs.
+
+Useful connected-device checks: `adb shell dumpsys activity services com.patchwire.app`, `adb shell dumpsys notification`, `adb shell dumpsys power`, and `adb logcat` for foreground-service security exceptions or capture errors. Android may hide notification actions on a secure lock screen until authentication; OEM battery policies and deep Doze behavior require physical testing. WebRTC remains peer-to-peer and requires an existing TURN configuration on networks that block direct audio; a microphone permission fix cannot repair a blocked ICE path.

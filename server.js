@@ -273,7 +273,7 @@ function roomMsg(me, d) {
   }
   if (!cur) return;
   if (d.type === 'room:leave') {
-    if (cur.host === me.id && cur.members.size > 1) {
+    if (d.automatic !== true && cur.host === me.id && cur.members.size > 1) {
       const t = cur.members.get(d.transfer);
       if (!t || t.role !== 'speaker' || d.transfer === me.id) return err('Choose a speaker to take over, or end the room');
       cur.host = d.transfer;
@@ -339,6 +339,7 @@ wss.on('connection', (ws, req) => {
   ws.alive = true; ws.on('pong', () => (ws.alive = true));
   ws.on('message', raw => {
     let d; try { d = JSON.parse(raw); } catch { return; }
+    if (d.type === 'ping') return ws.send(JSON.stringify({ type: 'pong' }));
     if (String(d.type).startsWith('room:')) return roomMsg(me, d);
     if (d.type !== 'msg') return;
     const t = clean(d.t, 500);

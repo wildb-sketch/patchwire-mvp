@@ -8,7 +8,8 @@ let x = fs.readFileSync(p, 'utf8');
 // --- permissions ---
 const perms = [
   'RECORD_AUDIO', 'MODIFY_AUDIO_SETTINGS', 'ACCESS_NETWORK_STATE',
-  'FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_MICROPHONE',
+  'FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_MICROPHONE', 'FOREGROUND_SERVICE_MEDIA_PLAYBACK',
+  'WAKE_LOCK', 'ACCESS_WIFI_STATE',
   'POST_NOTIFICATIONS', 'RECEIVE_BOOT_COMPLETED',
   'INTERNET', 'VIBRATE'
 ];
@@ -22,7 +23,7 @@ const micType = '<uses-feature android:name="android.hardware.microphone" androi
 if (!x.includes('android.hardware.microphone')) x = x.replace('<application', micType + '\n    <application');
 
 // network security config
-x = x.replace(
+if (!x.includes('android:networkSecurityConfig=')) x = x.replace(
   'android:label="@string/app_name"',
   'android:label="@string/app_name"\n        android:networkSecurityConfig="@xml/network_security_config"'
 );
@@ -50,9 +51,10 @@ if (!x.includes('patchwire.whassabi.workers.dev')) {
 const service = `
     <service
         android:name="com.patchwire.app.RoomService"
-        android:foregroundServiceType="microphone"
+        android:foregroundServiceType="microphone|mediaPlayback"
         android:exported="false" />`;
-if (!x.includes('RoomService')) x = x.replace('</application>', service + '\n</application>');
+x = x.replace(/<service\b[^>]*android:name="com\.patchwire\.app\.RoomService"[^>]*\/>/g, '');
+x = x.replace('</application>', service + '\n</application>');
 
 fs.writeFileSync(p, x);
 console.log('AndroidManifest.xml patched');
