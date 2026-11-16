@@ -2,104 +2,147 @@ package com.patchwire.app;
 
 import android.app.*;
 import android.content.*;
+import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.net.wifi.WifiManager;
 import android.os.*;
 import androidx.core.app.NotificationCompat;
 
-/**
- * Foreground service that keeps the microphone and WebRTC audio alive when the screen
- * turns off or the user switches apps. Exposes Mute and Leave buttons in the notification.
- */
+/** Owns the Android foreground lifetime; WebRTC and its microphone track remain in the WebView. */
 public class RoomService extends Service {
-
     public static final String ACTION_START = "com.patchwire.app.ROOM_START";
-    public static final String ACTION_STOP  = "com.patchwire.app.ROOM_STOP";
-    public static final String ACTION_MUTE  = "com.patchwire.app.ROOM_MUTE";
-    public static final String EXTRA_TITLE  = "room_title";
-    public static final String EXTRA_MUTED  = "muted";
-    static final String CHANNEL_ID          = "patchwire_room";
-    static final int    NOTIF_ID            = 1001;
+    public static final String ACTION_STATE = "com.patchwire.app.ROOM_STATE";
+    public static final String ACTION_MUTE = "com.patchwire.app.ROOM_MUTE";
+    public static final String ACTION_LEAVE = "com.patchwire.app.ROOM_LEAVE";
+    public static final String EXTRA_TITLE = "room_title";
+    public static final String EXTRA_MUTED = "muted";
+    static final String CHANNEL_ID = "patchwire_room";
+    static final int NOTIF_ID = 1001;
+    static volatile boolean active = false;
+    static volatile boolean microphone = false;
 
-    private AudioManager      am;
-    private AudioFocusRequest afr;
-    private boolean           muted    = false;
-    private String            lastTitle = "Live room";
+    private AudioManager audio;
+    private NotificationManager notifications;
+    private AudioFocusRequest focus;
+    private PowerManager.WakeLock wakeLock;
+    private WifiManager.WifiLock wifiLock;
+    private boolean muted = true;
+    private boolean speaking = false;
+    private String title = "Live room";
+    private final AudioManager.OnAudioFocusChangeListener focusListener = change -> {
+        // A call or another app taking exclusive focus must never leave an unnoticed open microphone.
+        if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+            RoomPlugin.command("mute", true);
+        }
+    };
 
-    @Override public IBinder onBind(Intent i) { return null; }
+    @Override public IBinder onBind(Intent intent) { return null; }
 
-    @Override
-    public void onCreate() {
+    @Override public void onCreate() {
         super.onCreate();
-        am = (AudioManager) getSystemService(AUDIO_SERVICE);
-        createChannel();
-    }
-
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null) return START_STICKY;
-        final String action = intent.getAction();
-        if (ACTION_STOP.equals(action)) { stopSelf(); return START_NOT_STICKY; }
-        if (ACTION_MUTE.equals(action)) {
-            muted = intent.getBooleanExtra(EXTRA_MUTED, false);
-            updateNotif(lastTitle);
-            return START_STICKY;
-        }
-        // ACTION_START
-        String t = intent.getStringExtra(EXTRA_TITLE);
-        if (t != null) lastTitle = t;
-        requestAudioFocus();
-        startForeground(NOTIF_ID, buildNotif(lastTitle));
-        return START_STICKY;
-    }
-
-    @Override
-    public void onDestroy() { abandonAudioFocus(); super.onDestroy(); }
-
-    // ---- audio focus ----
-    private void requestAudioFocus() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            AudioAttributes attrs = new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
-            afr = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                    .setAudioAttributes(attrs)
-                    .setOnAudioFocusChangeListener(change -> {}).build();
-            am.requestAudioFocus(afr);
+        audio = (AudioManager) getSystemService(AUDIO_SERVICE);
+        notifications = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (Build.VERSION.SDK_INT >= 26) {
+            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Live room", NotificationManager.IMPORTANCE_LOW);
+            channel.setDescription("Voice room audio and controls");
+            channel.setShowBadge(false);
+            notifications.createNotificationChannel(channel);
         }
     }
-    private void abandonAudioFocus() {
-        if (afr != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) am.abandonAudioFocusRequest(afr);
+
+    @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        // The WebView cannot recover its transport after process death. Do not resurrect a fake call.
+        if (intent == null) { stopSelf(); return START_NOT_STICKY; }
+        String action = intent.getAction();
+        if (ACTION_MUTE.equals(action) || ACTION_LEAVE.equals(action)) {
+            if (!active || !RoomPlugin.command(ACTION_LEAVE.equals(action) ? "leave" : "mute",
+                    intent.getBooleanExtra(EXTRA_MUTED, true))) stopSelf();
+            return START_NOT_STICKY;
+        }
+        if (ACTION_STATE.equals(action)) {
+            if (!active) { stopSelf(); return START_NOT_STICKY; }
+            muted = intent.getBooleanExtra(EXTRA_MUTED, true);
+            speaking = intent.getBooleanExtra("speaking", false);
+            notifications.notify(NOTIF_ID, notification());
+            return START_NOT_STICKY;
+        }
+        if (!ACTION_START.equals(action)) { stopSelf(); return START_NOT_STICKY; }
+        ResultReceiver receiver = intent.getParcelableExtra("receiver");
+        try {
+            title = intent.getStringExtra(EXTRA_TITLE);
+            muted = intent.getBooleanExtra(EXTRA_MUTED, true);
+            speaking = intent.getBooleanExtra("speaking", false);
+            boolean needsMic = intent.getBooleanExtra("microphone", false);
+            // Once granted in the foreground, retain microphone eligibility through mute/demotion.
+            microphone = microphone || needsMic;
+            if (Build.VERSION.SDK_INT >= 29) {
+                int types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
+                if (microphone && Build.VERSION.SDK_INT >= 30) types |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+                startForeground(NOTIF_ID, notification(), types);
+            } else startForeground(NOTIF_ID, notification());
+            if (!active) acquireResources();
+            active = true;
+            if (receiver != null) receiver.send(0, Bundle.EMPTY);
+        } catch (RuntimeException e) {
+            Bundle error = new Bundle(); error.putString("error", "Room audio service: " + e.getMessage());
+            if (receiver != null) receiver.send(1, error);
+            stopSelf();
+        }
+        return START_NOT_STICKY;
     }
 
-    // ---- notification ----
-    private void createChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-        NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "Live room", NotificationManager.IMPORTANCE_LOW);
-        ch.setDescription("Keeps your voice room running in the background");
-        ch.setShowBadge(false);
-        ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(ch);
+    private void acquireResources() {
+        wakeLock = ((PowerManager) getSystemService(POWER_SERVICE)).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Whassabi:VoiceRoom");
+        wakeLock.setReferenceCounted(false);
+        wakeLock.acquire(); // Lifetime is strictly bounded by the joined room / onDestroy.
+        WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+        if (wifi != null) {
+            wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Whassabi:VoiceRoom");
+            wifiLock.setReferenceCounted(false);
+            wifiLock.acquire();
+        }
+        if (Build.VERSION.SDK_INT >= 26) {
+            focus = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                .setOnAudioFocusChangeListener(focusListener).build();
+            audio.requestAudioFocus(focus);
+        } else audio.requestAudioFocus(focusListener, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN);
     }
 
-    private Notification buildNotif(String title) {
-        Intent open   = new Intent(this, MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        Intent stop   = new Intent(this, RoomService.class).setAction(ACTION_STOP);
-        Intent toggle = new Intent(this, RoomService.class).setAction(ACTION_MUTE).putExtra(EXTRA_MUTED, !muted);
-        PendingIntent piOpen   = PendingIntent.getActivity(this, 0, open,   PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-        PendingIntent piStop   = PendingIntent.getService(this,  1, stop,   PendingIntent.FLAG_IMMUTABLE);
-        PendingIntent piToggle = PendingIntent.getService(this,  2, toggle, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-                .setContentTitle(title)
-                .setContentText(muted ? "Microphone muted — tap to return" : "You are live — tap to return")
-                .setContentIntent(piOpen).setOngoing(true).setSilent(true)
-                .addAction(muted ? android.R.drawable.ic_btn_speak_now : android.R.drawable.ic_lock_silent_mode,
-                           muted ? "Unmute" : "Mute", piToggle)
-                .addAction(android.R.drawable.ic_delete, "Leave", piStop)
-                .build();
+    @Override public void onTaskRemoved(Intent rootIntent) {
+        RoomPlugin.command("leave", true);
+        stopSelf();
+        super.onTaskRemoved(rootIntent);
     }
-    private void updateNotif(String title) {
-        ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(NOTIF_ID, buildNotif(title));
+
+    @Override public void onDestroy() {
+        active = false;
+        microphone = false;
+        if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
+        if (Build.VERSION.SDK_INT >= 26 && focus != null) audio.abandonAudioFocusRequest(focus);
+        else if (audio != null) audio.abandonAudioFocus(focusListener);
+        stopForeground(true);
+        super.onDestroy();
+    }
+
+    private Notification notification() {
+        int flags = PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT;
+        PendingIntent open = PendingIntent.getActivity(this, 0,
+            new Intent(this, MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP), flags);
+        PendingIntent leave = PendingIntent.getService(this, 1,
+            new Intent(this, RoomService.class).setAction(ACTION_LEAVE), flags);
+        PendingIntent toggle = PendingIntent.getService(this, 2,
+            new Intent(this, RoomService.class).setAction(ACTION_MUTE).putExtra(EXTRA_MUTED, !muted), flags);
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setContentTitle(title).setContentText(!speaking ? "Listening — tap to return" : muted ? "Microphone muted" : "Microphone on")
+            .setContentIntent(open).setOngoing(true).setSilent(true).setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_CALL).setVisibility(NotificationCompat.VISIBILITY_PUBLIC);
+        if (speaking) builder.addAction(android.R.drawable.ic_btn_speak_now, muted ? "Unmute" : "Mute", toggle);
+        return builder.addAction(android.R.drawable.ic_delete, "Leave", leave).build();
     }
 }

@@ -451,7 +451,7 @@ function mini(){
  $('#msd').onclick=()=>setDeaf(!S.deaf);$('#mx').onclick=leaveRoom;
 }
 function setDeaf(v){S.deaf=v;Object.values(R.peers).forEach(p=>{if(p.audio)p.audio.muted=S.deaf});if(S.ov&&S.ov.t=='room')paintOv();else mini()}
-function setMute(v){S.muted=v;if(R.mic)R.mic.enabled=!S.muted;wsSend({type:'room:mute',on:v});nativeRoom('mute',v);if(S.ov&&S.ov.t=='room')paintOv();else mini()}
+function setMute(v){if(!S.room||!iSpeak())return;S.muted=!!v;if(!v)micFailed=false;if(R.mic)R.mic.enabled=!S.muted;wsSend({type:'room:mute',on:S.muted});nativeRoom('mute',S.muted).catch(e=>toast(micError(e)));syncMic();if(S.ov&&S.ov.t=='room')paintOv();else mini()}
 
 /* ---------- overlays ---------- */
 function openOv(t,id){if(S.ov&&S.ov.t=='live'&&t!='live')stopMeter();if(S.rec)stopRec(false);S.menu=false;if(!S.ov)hpush();S.ov={t,id};if(t=='chat'){S.read[id]=Date.now();saveRead()}if(t=='search'){S.sq='';S.sres=[]}paintOv();mini()}
@@ -479,32 +479,35 @@ function pLive(){
  $('#ob').querySelectorAll('[data-au]').forEach(b=>b.onclick=()=>{F.aud=b.dataset.au;pLive()});
  $('#cov').onclick=()=>{modal(`<h2>Show artwork</h2><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">${COVERS.map((c,i)=>`<button data-c="${i}" aria-label="Artwork ${i+1}" style="height:84px;border-radius:14px;background:${c};border:2px solid ${F.cover==i?'var(--lime)':'var(--line)'}"></button>`).join('')}</div><button class="btn g w" data-x>Close</button>`,b=>{b.querySelectorAll('[data-c]').forEach(x=>x.onclick=()=>{F.cover=+x.dataset.c;closeModal();pLive()});b.querySelector('[data-x]').onclick=closeModal})};
  if(!E)$('#mcd').onclick=micSheet;
- $('#st').onclick=()=>{const t=F.title.trim();if(!t)return toast('Add a title for your show');
+ $('#st').onclick=async()=>{const t=F.title.trim();if(!t)return toast('Add a title for your show');
   const body={title:t,desc:F.desc.trim(),topic:F.topic,cover:F.cover,audience:F.aud};
   if(E){if(wsSend({type:'room:update',...body})){S.ef=null;openOv('room');toast('Room updated')}return}
   if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia))return toast('Voice needs HTTPS or localhost');
-  stopMeter();S.lf.title='';S.lf.desc='';const mk=()=>wsSend({type:'room:create',...body});S.room?askLeave(mk):mk()};
+  stopMeter();try{const check=await captureMic();check.getTracks().forEach(t=>t.stop())}catch(e){toast(micError(e));return}S.lf.title='';S.lf.desc='';const mk=()=>wsSend({type:'room:create',...body});S.room?askLeave(mk):mk()};
  if(!E&&!meter)startMeter();
 }
 function openEdit(){const r=S.room;if(!r||r.host!=S.me.id)return;S.ef={title:r.title,desc:r.desc||'',topic:r.topic,cover:r.cover||0,aud:r.audience||'everyone'};S.ov={t:'live',edit:true};paintOv();mini()}
 let meter=null,actx=null;const AC=window.AudioContext||window.webkitAudioContext;
 const ctxA=()=>{actx=actx||new AC();if(actx.state=='suspended')actx.resume();return actx};
 const micCons=()=>({echoCancellation:true,noiseSuppression:true,...(S.micId?{deviceId:{exact:S.micId}}:{})});
+let meterPending=false,meterEpoch=0;
 async function startMeter(){
- try{const st=await navigator.mediaDevices.getUserMedia({audio:micCons()});if(!S.ov||S.ov.t!='live'){st.getTracks().forEach(t=>t.stop());return}
+ if(meterPending)return;meterPending=true;const epoch=meterEpoch;
+ try{const st=await captureMic();if(epoch!==meterEpoch||!S.ov||S.ov.t!='live'){st.getTracks().forEach(t=>t.stop());return}
   const t=st.getAudioTracks()[0];S.micLabel=(t&&t.label)||'Default microphone';
   try{S.mics=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind=='audioinput')}catch(e){}
+  if(epoch!==meterEpoch||!S.ov||S.ov.t!=='live'){st.getTracks().forEach(t=>t.stop());return}
   const a=ctxA().createAnalyser();a.fftSize=256;ctxA().createMediaStreamSource(st).connect(a);const b=new Uint8Array(a.fftSize);
   meter={st,id:setInterval(()=>{a.getByteTimeDomainData(b);let s=0;for(const v of b){const x=(v-128)/128;s+=x*x}const l=Math.min(1,Math.sqrt(s/b.length)*4);document.querySelectorAll('.mb i').forEach((e,i)=>e.style.height=(4+Math.max(0,l*18-(i%3)*3))+'px')},90)};
   const lb=$('#mlab');if(lb)lb.textContent=S.micLabel}
- catch(e){const lb=$('#mlab');if(lb)lb.textContent='Microphone blocked or unavailable'}
+ catch(e){const lb=$('#mlab');if(lb)lb.textContent=micError(e)}finally{meterPending=false}
 }
-function stopMeter(){if(meter){clearInterval(meter.id);meter.st.getTracks().forEach(t=>t.stop());meter=null}}
+function stopMeter(){meterEpoch++;if(meter){clearInterval(meter.id);meter.st.getTracks().forEach(t=>t.stop());meter=null}}
 async function micSheet(){
  try{if(!S.mics.length)S.mics=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind=='audioinput')}catch(e){}
  modal(`<h2>Broadcast & Audio Hardware</h2><p class="mute s">Pick the microphone you broadcast with.</p>${S.mics.length?S.mics.map(d=>`<button class="btn ${S.micId==d.deviceId||(!S.micId&&d.deviceId=='default')?'':'g'} w" data-d="${esc(d.deviceId)}">${esc(d.label||'Microphone')}</button>`).join(''):'<p class="mute c">No microphones found yet. Open Start live and allow microphone access first.</p>'}<button class="btn g w" data-x>Close</button>`,b=>{
   b.querySelector('[data-x]').onclick=closeModal;
-  b.querySelectorAll('[data-d]').forEach(x=>x.onclick=()=>{S.micId=x.dataset.d;try{localStorage.setItem('pw_mic',S.micId)}catch(e){}if(R.mic){R.mic.stop();R.mic=null}closeModal();toast('Microphone selected');if(S.ov&&S.ov.t=='live'){stopMeter();startMeter()}else if(S.room)syncMic()})})}
+  b.querySelectorAll('[data-d]').forEach(x=>x.onclick=()=>{S.micId=x.dataset.d;try{localStorage.setItem('pw_mic',S.micId)}catch(e){}if(R.mic){R.mic.stop();R.mic=null}micFailed=false;closeModal();toast('Microphone selected');if(S.ov&&S.ov.t=='live'){stopMeter();startMeter()}else if(S.room)syncMic()})})}
 const fmt=s=>Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0');
 function bubble(x){const me=x.from==S.me.id;
  if(x.kind=='voice'){const bars=[...String(x.id)].slice(0,24).map(c=>4+(c.charCodeAt(0)*7%16)).map(v=>`<i style="height:${v}px"></i>`).join('');
@@ -523,7 +526,8 @@ async function playVoice(id,btn){
 const blobData=b=>new Promise((ok,no)=>{const f=new FileReader();f.onload=()=>ok(f.result);f.onerror=no;f.readAsDataURL(b)});
 async function startRec(){
  if(!window.MediaRecorder||!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia))return toast('Voice messages need a modern browser and HTTPS');
- try{const st=await navigator.mediaDevices.getUserMedia({audio:micCons()});
+ const view=S.ov;
+ try{const st=await captureMic();if(S.ov!==view||!view||view.t!=='chat'){st.getTracks().forEach(t=>t.stop());return}
   const mt=['audio/webm;codecs=opus','audio/mp4','audio/ogg;codecs=opus'].find(t=>MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(t))||'';
   const mr=new MediaRecorder(st,mt?{mimeType:mt,audioBitsPerSecond:32000}:{audioBitsPerSecond:32000}),chunks=[];
   mr.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};
@@ -533,7 +537,7 @@ async function startRec(){
    if(blob.size<600)return toast('That was too short');
    try{await api('/voice','POST',{to:rec.to,dur,data:await blobData(blob)})}catch(e){toast(e.message||'Could not send the voice message')}};
   mr.start();rec.tm=setInterval(()=>{const s=Math.round((Date.now()-rec.t0)/1e3),e=$('#rt');if(e)e.textContent=fmt(s);if(s>=60)stopRec(true)},250);paintOv()}
- catch(e){toast('Microphone blocked. Allow it in your browser settings')}}
+ catch(e){toast(micError(e))}}
 function stopRec(send){const r=S.rec;if(!r)return;r.send=send;try{r.mr.stop()}catch(e){S.rec=null}}
 function pChat(){
  const id=S.ov.id,u=who(id),h=S.msgs.filter(x=>x.from==id||x.to==id),can=isFr(id)||(u.dm||'everyone')!='friends',req=S.fr.outgoing.some(x=>x.id==id),lv=hostRoom(id);
@@ -605,7 +609,7 @@ function pRoom(){
  if(g('#ms2'))g('#ms2').onclick=()=>{S.menu=false;openEdit()};
  if(g('#fw'))g('#fw').onclick=async()=>{try{await api(isFol(r.host)?'/unfollow':'/follow','POST',{id:r.host});await loadFollows();toast(isFol(r.host)?'Following '+handle(r.hostNick):'Unfollowed');pRoom()}catch(e){toast(e.message)}};
  if(g('#mic'))g('#mic').onclick=()=>setMute(!S.muted);
- if(g('#hand'))g('#hand').onclick=()=>wsSend({type:'room:hand',on:!me.hand});
+ if(g('#hand'))g('#hand').onclick=async()=>{try{if(!me.hand){await roomCall('prepareMicrophone');await nativeRoom('start',true)}wsSend({type:'room:hand',on:!me.hand})}catch(e){toast(micError(e))}};
  $('#ob').querySelectorAll('[data-prof]').forEach(b=>b.onclick=()=>openProfile(b.dataset.prof));
  $('#ob').querySelectorAll('[data-role]').forEach(b=>b.onclick=()=>{const[u,role]=b.dataset.role.split('|');if(wsSend({type:'room:role',uid:u,role})&&b.dataset.iv2)toast('Invitation sent. They need to accept')});
  $('#ob').querySelectorAll('[data-em]').forEach(b=>b.onclick=()=>wsSend({type:'room:chat',t:b.dataset.em}));
@@ -672,11 +676,12 @@ function checkInvite(){
   if(!S.invAsk){S.invAsk=true;
    modal(`<h2>Go on stage?</h2><p class="mute">${esc(handle(r.hostNick))} invited you to speak in “${esc(r.title)}”. Your microphone turns on only if you accept.</p><button class="btn w" data-ok>${ic('mic',16)}Accept and go on stage</button><button class="btn g w" data-no>Not now</button>`,b=>{
     $('#md').onclick=null;
-    b.querySelector('[data-ok]').onclick=()=>{S.invAsk=false;closeModal();wsSend({type:'room:accept'})};
+    b.querySelector('[data-ok]').onclick=async()=>{try{await roomCall('prepareMicrophone');await nativeRoom('start',true);S.invAsk=false;closeModal();wsSend({type:'room:accept'})}catch(e){toast(micError(e))}};
     b.querySelector('[data-no]').onclick=()=>{S.invAsk=false;closeModal();wsSend({type:'room:decline'})}})}
  }else if(S.invAsk){S.invAsk=false;if($('#mb [data-ok]'))closeModal()}}
 function leaveRoom(){askLeave()}
-function doLeave(mode,uid){if(mode=='end')wsSend({type:'room:end'});else wsSend({type:'room:leave',...(uid?{transfer:uid}:{})});cleanup()}
+let pendingRoomExit=null;
+function doLeave(mode,uid){const command=mode==='end'?{type:'room:end'}:{type:'room:leave',...(mode==='notification'?{automatic:true}:uid?{transfer:uid}:{})};if(S.room)pendingRoomExit={id:S.room.id,command};wsSend(command);cleanup()}
 function askLeave(next){
  const r=S.room;if(!r){if(next)next();return}
  const go=(m,u)=>{closeModal();doLeave(m,u);if(next)next()};
@@ -696,39 +701,116 @@ setInterval(()=>{for(const u in R.an){const{a,b}=R.an[u];a.getByteTimeDomainData
  document.querySelectorAll('.eqb[data-t="'+u+'"]').forEach(e=>e.classList.toggle('on',on));
  document.querySelectorAll('.av[data-t="'+u+'"]').forEach(e=>{e.style.filter=on?'drop-shadow(0 0 8px #ffd91a)':''})}},150);
 const iSpeak=()=>!!S.room&&S.room.members.some(m=>m.uid==S.me.id&&m.role=='speaker');
-const setTrack=async pc=>{const t=pc.getTransceivers()[0];if(t&&t.sender)try{await t.sender.replaceTrack(R.mic&&iSpeak()?R.mic:null)}catch(e){}};
+const setTrack=async pc=>{const t=pc.getTransceivers()[0];if(t&&t.sender)try{await t.sender.replaceTrack(R.mic&&iSpeak()?R.mic:null)}catch(e){console.error('Could not attach room microphone',e)}};
 const drop=u=>{delete R.an[u];const p=R.peers[u];if(!p)return;try{p.pc.close()}catch(e){}if(p.audio)p.audio.remove();delete R.peers[u]};
 const conn=(u,off)=>{if(R.peers[u])return R.peers[u];
  const pc=new RTCPeerConnection({iceServers:ICE}),P={pc,q:[],audio:null};R.peers[u]=P;
  pc.onicecandidate=e=>{if(e.candidate)wsSend({type:'room:signal',to:u,data:{c:e.candidate}})};
  pc.ontrack=e=>{if(!P.audio){P.audio=document.createElement('audio');P.audio.autoplay=true;P.audio.muted=S.deaf;document.body.append(P.audio)}P.audio.srcObject=e.streams[0]||new MediaStream([e.track]);P.audio.play().catch(()=>{});watch(u,new MediaStream([e.track]))};
- pc.onconnectionstatechange=()=>{if(pc.connectionState=='failed')toast('A voice connection failed. Your network may block it')};
+ pc.onconnectionstatechange=()=>{if(pc.connectionState==='failed')toast('Voice connection failed. Check your network; some networks require a TURN relay.')};
  if(off){pc.addTransceiver('audio',{direction:'sendrecv'});pc.createOffer().then(o=>pc.setLocalDescription(o)).then(()=>wsSend({type:'room:signal',to:u,data:{s:pc.localDescription}})).catch(()=>{})}
  setTrack(pc);return P};
-const onSignal=async(from,d)=>{if(!S.room||!d)return;
+const onSignal=async(from,d)=>{if(!S.room||!d||!S.room.members.some(m=>m.uid===from))return;
  if(d.s&&d.s.type=='offer'&&R.peers[from]&&R.peers[from].pc.remoteDescription)drop(from);
  const P=conn(from,false),pc=P.pc;
- try{if(d.s){await pc.setRemoteDescription(d.s);
+ try{if(d.s){const collision=d.s.type==='offer'&&pc.signalingState!=='stable';P.ignoreOffer=collision&&S.me.id<from;if(P.ignoreOffer)return;if(collision)await pc.setLocalDescription({type:'rollback'});await pc.setRemoteDescription(d.s);
    if(d.s.type=='offer'){const t=pc.getTransceivers()[0];if(t)t.direction='sendrecv';await setTrack(pc);const a=await pc.createAnswer();await pc.setLocalDescription(a);wsSend({type:'room:signal',to:from,data:{s:pc.localDescription}})}
    P.q.splice(0).forEach(c=>pc.addIceCandidate(c).catch(()=>{}))}
-  else if(d.c){pc.remoteDescription?pc.addIceCandidate(d.c).catch(()=>{}):P.q.push(d.c)}}catch(e){}};
-async function syncMic(){const sp=iSpeak();
- if(sp&&!R.mic){try{const s=await navigator.mediaDevices.getUserMedia({audio:micCons()});R.mic=s.getAudioTracks()[0];watch(S.me.id,new MediaStream([R.mic]))}catch(e){toast('Microphone blocked. Allow it in your browser settings')}}
- if(!sp&&R.mic){R.mic.stop();R.mic=null;delete R.an[S.me.id]}
- if(R.mic)R.mic.enabled=!S.muted;
- Object.values(R.peers).forEach(p=>setTrack(p.pc));
- if(S.ov&&S.ov.t=='room')paintOv();else render()}
-function nativeRoom(action,val){try{if(!window.RoomPlugin)return;if(action==='start')window.RoomPlugin.startRoom({title:String(val||'Live room')});else if(action==='stop')window.RoomPlugin.stopRoom({});else if(action==='mute')window.RoomPlugin.setMuted({muted:!!val})}catch(e){}}
-function cleanup(){S.invAsk=false;if($('#mb [data-ok]'))closeModal();nativeRoom('stop');Object.keys(R.peers).forEach(drop);if(R.mic){R.mic.stop();R.mic=null}if(S.me)delete R.an[S.me.id];S.room=null;S.chat=[];S.react=0;S.muted=false;S.deaf=false;if(S.ov&&S.ov.t=='room'){dropOv()}render()}
+  else if(d.c&&!P.ignoreOffer){pc.remoteDescription?pc.addIceCandidate(d.c).catch(()=>{}):P.q.push(d.c)}}catch(e){console.error('Room signaling failed',e);toast('Could not connect room audio. Check your connection and rejoin.')}};
+// Capacitor's injected nativePromise/addListener API also works on the remotely hosted pages.
+const androidRoom=()=>window.Capacitor&&window.Capacitor.getPlatform()==='android';
+let nativeQueue=Promise.resolve(),nativeListening=false,notificationWarning=false;
+function roomCall(method,options={}){
+ if(!androidRoom())return Promise.resolve({});
+ if(!nativeListening){
+  window.Capacitor.addListener('RoomPlugin','roomAction',d=>{
+   if(!S.room)return;
+   if(d.action==='mute')setMute(d.muted);
+   if(d.action==='leave'){
+    // A notification cannot show the host handover dialog while locked: hand to a co-host,
+    // or end the room when no co-host exists, as described in the Android testing notes.
+    doLeave('notification');
+   }
+  });
+  nativeListening=true;
+ }
+ const run=()=>window.Capacitor.nativePromise('RoomPlugin',method,options);
+ const result=nativeQueue.then(run);nativeQueue=result.catch(()=>{});return result;
+}
+function nativeRoom(action,val){
+ const p=action==='stop'?roomCall('stopRoom'):action==='mute'?roomCall('setMuted',{muted:!!val||!R.mic,speaking:iSpeak()}):
+  roomCall('startRoom',{title:S.room?.title||'Live room',microphone:!!val,speaking:iSpeak(),muted:S.muted||!iSpeak()||!R.mic});
+ return p.then(status=>{if(status?.notificationsEnabled===false&&!notificationWarning){notificationWarning=true;toast('Enable Android notifications for Whassabi to see room controls. Voice can continue without them')}});
+}
+const micError=e=>{
+ if(e.code==='MIC_PERMISSION_DENIED'||e.name==='NotAllowedError'||e.name==='SecurityError')return androidRoom()?'Allow Microphone in Android Settings > Apps > Whassabi > Permissions, then tap Unmute.':'Allow microphone access in your browser settings, then tap Unmute.';
+ if(e.name==='NotFoundError')return 'No microphone found. Connect a microphone and try again.';
+ if(e.name==='NotReadableError'||e.name==='AbortError')return 'Microphone is busy or unavailable. Close other recording apps and try again.';
+ return e.message||'Could not start room audio. Return to the app and try again.';
+};
+let captureQueue=Promise.resolve();
+function captureMic(){
+ const run=async()=>{
+  if(!navigator.mediaDevices?.getUserMedia)throw new Error('Voice needs HTTPS or localhost');
+  await roomCall('prepareMicrophone');
+  try{return await navigator.mediaDevices.getUserMedia({audio:micCons()})}
+  catch(e){if(e.name!=='OverconstrainedError')throw e;
+   S.micId=null;try{localStorage.removeItem('pw_mic')}catch(x){}
+   return navigator.mediaDevices.getUserMedia({audio:micCons()});}
+ };
+ const result=captureQueue.then(run);captureQueue=result.catch(()=>{});return result;
+}
+let micSync=null,micAgain=false,roomEpoch=0,micFailed=false;
+function syncMic(){
+ micAgain=true;
+ if(micSync)return micSync;
+ micSync=(async()=>{
+  while(micAgain){
+   micAgain=false;const epoch=roomEpoch,roomId=S.room?.id;if(!roomId)continue;
+   try{
+    if(R.mic?.readyState==='ended'){R.mic=null;micFailed=true;S.muted=true;toast('Microphone disconnected. Tap Unmute to retry.')}
+    // A listener starts playback only. Upgrade to microphone FGS after runtime permission.
+    await nativeRoom('start',!!R.mic);
+    if(epoch!==roomEpoch||S.room?.id!==roomId)continue;
+    if(iSpeak()&&!R.mic&&!micFailed){
+     await roomCall('prepareMicrophone');
+     if(epoch!==roomEpoch||!iSpeak())continue;
+     await nativeRoom('start',true);
+     const stream=await captureMic();
+     if(epoch!==roomEpoch||!iSpeak()){stream.getTracks().forEach(t=>t.stop());continue}
+     R.mic=stream.getAudioTracks()[0];
+     R.mic.enabled=!S.muted;
+     R.mic.onended=()=>{if(S.room){micFailed=true;S.muted=true;R.mic=null;wsSend({type:'room:mute',on:true});nativeRoom('mute',true).catch(e=>toast(micError(e)));toast('Microphone disconnected. Tap Unmute to retry.')}};
+     watch(S.me.id,new MediaStream([R.mic]));
+    }
+    if(!iSpeak()&&R.mic){R.mic.stop();R.mic=null;delete R.an[S.me.id]}
+    if(R.mic)R.mic.enabled=!S.muted;
+    await Promise.all(Object.values(R.peers).map(p=>setTrack(p.pc)));
+    await nativeRoom('mute',S.muted||!iSpeak());
+   }catch(e){
+    if(epoch!==roomEpoch)continue;
+    micFailed=true;const wasMuted=S.muted;S.muted=true;
+    if(R.mic){R.mic.stop();R.mic=null}
+    if(!wasMuted)wsSend({type:'room:mute',on:true});
+    nativeRoom('mute',true).catch(()=>{});toast(micError(e));
+   }
+   if(S.ov&&S.ov.t=='room')paintOv();else render();
+  }
+ })().finally(()=>{micSync=null});
+ return micSync;
+}
+function cleanup(){roomEpoch++;micFailed=false;S.invAsk=false;if($('#mb [data-ok]'))closeModal();nativeRoom('stop').catch(e=>toast(micError(e)));Object.keys(R.peers).forEach(drop);if(R.mic){R.mic.stop();R.mic=null}if(S.me)delete R.an[S.me.id];S.room=null;S.chat=[];S.react=0;S.muted=false;S.deaf=false;if(S.ov&&S.ov.t=='room'){dropOv()}render()}
 const bootRoom=async()=>{try{const r=await fetch('/api/ice',{headers:{Authorization:'Bearer '+S.tok}});if(r.ok)ICE=await r.json()}catch(e){}
  let m=/^#room=([0-9a-f]{8})$/.exec(location.hash);if(m){history.replaceState(null,'',location.pathname);wsSend({type:'room:join',id:m[1]});return}
  m=/^#u=([0-9a-f]{12})$/.exec(location.hash);if(m){history.replaceState(null,'',location.pathname);openProfile(m[1])}};
 
 /* ---------- websocket + loaders ---------- */
+let wsHeartbeat=0,lastPong=0;
 function connect(){
+ clearInterval(wsHeartbeat);
  ws=new WebSocket((location.protocol=='https:'?'wss://':'ws://')+location.host+'/ws?token='+S.tok);
- ws.onopen=()=>{retry=0};
- ws.onmessage=e=>{const d=JSON.parse(e.data),t=d.type;
+ ws.onopen=()=>{retry=0;lastPong=Date.now();if(pendingRoomExit)wsSend(pendingRoomExit.command);wsHeartbeat=setInterval(()=>{if(!ws||ws.readyState!==1)return;if(Date.now()-lastPong>45000){ws.close();return}wsSend({type:'ping'})},15000)};
+ ws.onmessage=e=>{const d=JSON.parse(e.data),t=d.type;if(t==='pong'){lastPong=Date.now();return}
   if(t=='error')return toast(d.error);
   if(t=='friends'){loadFriends(true);return}
   if(t=='follows'){loadFollows(true);return}
@@ -737,16 +819,16 @@ function connect(){
    if(open){S.read[peer]=Date.now();saveRead();paintOv()}
    else if(d.m.from!=S.me.id){toast(who(d.m.from).nick+': '+String(d.m.t).slice(0,40),()=>openOv('chat',peer));if(!S.users.some(u=>u.id==d.m.from))loadUsers()}
    if(!S.ov||S.ov.t!='chat')render();return}
-  if(t=='rooms'){S.rooms=d.rooms;if(!booted){booted=true;bootRoom()}if(S.room){const r=d.rooms.find(x=>x.id==S.room.id);if(r)S.room=r}if(S.ov&&S.ov.t=='all')paintOv();else if(!S.ov)render();return}
+  if(t=='rooms'){S.rooms=d.rooms;if(pendingRoomExit&&!d.rooms.some(r=>r.id===pendingRoomExit.id&&r.members.some(m=>m.uid===S.me.id)))pendingRoomExit=null;if(S.room&&!d.rooms.some(r=>r.id===S.room.id&&r.members.some(m=>m.uid===S.me.id))){cleanup();toast('Your room has ended or your seat expired')}if(!booted){booted=true;bootRoom()}if(S.room){const r=d.rooms.find(x=>x.id==S.room.id);if(r)S.room=r}if(S.ov&&S.ov.t=='all')paintOv();else if(!S.ov)render();return}
   if(t=='room:error')return toast(d.error);
-  if(t=='room:joined'){S.room=d.room;S.chat=[];S.react=0;S.muted=false;d.room.members.filter(m=>m.uid!=S.me.id).forEach(m=>conn(m.uid,true));closeModal();if(!H.sent){H.sent=true;hpush()}setOv({t:'room'});stopMeter();if(d.resumed)toast('Back in the room');syncMic();nativeRoom('start',d.room.title);return}
-  if(t=='room:state'){S.room=d.room;checkInvite();syncMic();return}
+  if(t=='room:joined'){if(pendingRoomExit?.id===d.room.id)return;const same=S.room?.id===d.room.id;if(!same){roomEpoch++;micFailed=false;S.chat=[];S.react=0;S.muted=!!d.room.members.find(m=>m.uid===S.me.id)?.muted}else Object.keys(R.peers).forEach(drop);S.room=d.room;d.room.members.filter(m=>m.uid!=S.me.id).forEach(m=>conn(m.uid,true));closeModal();if(!H.sent){H.sent=true;hpush()}setOv({t:'room'});stopMeter();if(d.resumed)toast('Back in the room');syncMic();wsSend({type:'room:mute',on:S.muted});return}
+  if(t=='room:state'){if(!S.room||pendingRoomExit?.id===d.room.id)return;S.room=d.room;checkInvite();syncMic();return}
   if(t=='room:declined'){toast(d.nick+' chose not to go on stage');return}
   if(t=='room:peer-left'){drop(d.uid);return}
   if(t=='room:ended'){if(S.room){cleanup();toast('The host ended the room')}return}
   if(t=='room:chat'){S.chat.push(d);if(S.chat.length>100)S.chat.shift();if(['👏','🔥','❤️'].includes(d.t))S.react++;addChat(d);return}
   if(t=='room:signal')onSignal(d.from,d.data)};
- ws.onclose=e=>{if(S.room)cleanup();if(e.code==4401){try{localStorage.removeItem('pw_tok')}catch(x){}return location.reload()}setTimeout(connect,Math.min(8000,1000*++retry))};
+ ws.onclose=e=>{clearInterval(wsHeartbeat);if(S.room)toast('Reconnecting to your room…');if(e.code==4401){try{localStorage.removeItem('pw_tok')}catch(x){}return location.reload()}setTimeout(connect,Math.min(8000,1000*++retry))};
 }
 async function loadUsers(){try{S.users=await api('/users');if(!S.ov)render()}catch(e){}}
 async function loadFeed(){try{S.feed=await api('/feed');if(S.tab=='feed'&&!S.ov)render()}catch(e){}}
@@ -762,6 +844,7 @@ async function loadFriends(notify){try{const prev=S.fr,f=await api('/friends');
 async function boot(me){S.me=me;dropOv();try{S.msgs=await api('/messages')}catch(e){S.msgs=[]}
  await loadUsers();await loadFriends();await loadFollows();connect();clearInterval(tmr);tmr=setInterval(()=>{loadUsers();loadFriends();loadFollows()},20000);S.tab='discover';render()}
 window.addEventListener('scroll',()=>{const x=$('#hd');if(x)x.classList.toggle('on',scrollY>6)},{passive:true});
+window.addEventListener('pagehide',()=>{if(S.room)cleanup()});
 if('serviceWorker' in navigator&&location.protocol!='file:')navigator.serviceWorker.register('/sw.js').catch(()=>{});
 (async()=>{if(S.tok){try{return await boot(await api('/me'))}catch(e){S.tok=null}}S.ov={t:'auth'};paintOv()})();
 </script>

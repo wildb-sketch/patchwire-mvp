@@ -4,11 +4,6 @@ import android.content.*;
 import android.net.Uri;
 import android.os.*;
 import com.getcapacitor.BridgeActivity;
-import com.getcapacitor.Plugin;
-import com.getcapacitor.PluginCall;
-import com.getcapacitor.PluginMethod;
-import com.getcapacitor.annotation.CapacitorPlugin;
-import java.util.ArrayList;
 
 public class MainActivity extends BridgeActivity {
 
@@ -43,36 +38,9 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
-    // ---- bridge plugin: lets JavaScript start/stop/mute the foreground service ----
-    @CapacitorPlugin(name = "RoomPlugin")
-    public static class RoomPlugin extends Plugin {
-
-        @PluginMethod
-        public void startRoom(PluginCall call) {
-            String title = call.getString("title", "Live room");
-            Intent i = new Intent(getContext(), RoomService.class)
-                    .setAction(RoomService.ACTION_START)
-                    .putExtra(RoomService.EXTRA_TITLE, title);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                getContext().startForegroundService(i);
-            else
-                getContext().startService(i);
-            call.resolve();
-        }
-
-        @PluginMethod
-        public void stopRoom(PluginCall call) {
-            getContext().startService(new Intent(getContext(), RoomService.class).setAction(RoomService.ACTION_STOP));
-            call.resolve();
-        }
-
-        @PluginMethod
-        public void setMuted(PluginCall call) {
-            boolean muted = Boolean.TRUE.equals(call.getBoolean("muted", false));
-            getContext().startService(new Intent(getContext(), RoomService.class)
-                    .setAction(RoomService.ACTION_MUTE)
-                    .putExtra(RoomService.EXTRA_MUTED, muted));
-            call.resolve();
-        }
+    // The room transport lives in this WebView. Never leave a phantom service after its destruction.
+    @Override public void onDestroy() {
+        stopService(new Intent(this, RoomService.class));
+        super.onDestroy();
     }
 }

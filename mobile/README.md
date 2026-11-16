@@ -28,7 +28,7 @@ Open that address in Chrome on your Android phone, open the menu and choose **In
 Needs Node 20, JDK 17 and the Android SDK (Android Studio installs it).
 ```
 cd mobile
-npm install
+npm ci
 npm run prepare-android
 npm run apk
 ```
@@ -38,3 +38,7 @@ The file is `android/app/build/outputs/apk/debug/app-debug.apk`.
 - This is a debug build for testing, not a Play Store release.
 - Microphone permissions are added by `scripts/patch-manifest.js`. Android asks for microphone access the first time you go on stage or record a voice message.
 - To point the app at another server open Profile > **Change server**.
+
+## Android voice reliability
+
+See [Android voice validation](ANDROID-VOICE-TESTING.md) for the diagnosis, coordinated APK/web rollout, automated checks, and real-device lock-screen acceptance tests.

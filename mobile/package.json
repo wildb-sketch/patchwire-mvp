@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "private": true,
   "scripts": {
-    "prepare-android": "cap add android || true && node scripts/patch-manifest.js && cap sync android",
+    "prepare-android": "node scripts/prepare-android.js",
     "apk": "cd android && ./gradlew assembleDebug",
     "apk-release": "cd android && ./gradlew assembleRelease"
   },
