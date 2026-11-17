@@ -21,9 +21,19 @@ new_sqlite_classes = ["Hub"]
 # Other secrets: ANTHROPIC_API_KEY, or TURN_PASS for an existing static TURN provider.
 [vars]
 FCM_PROJECT_ID = "patchwire-c4a0c"
+PUBLIC_ORIGIN = "https://patchwire.whassabi.workers.dev"
 ANDROID_APP_LINK_SHA256 = "2D:6F:D1:A4:05:CF:B6:D7:8F:1C:51:0F:D5:E0:AC:3F:F2:C3:95:42:DF:65:7E:B5:E8:FA:AA:3E:E8:3A:32:67"
 # Push signing credentials: Worker secret FCM_SERVICE_ACCOUNT (service-account JSON).
 # Verified Android links: ANDROID_APP_LINK_SHA256 (public certificate fingerprint; see mobile/PUSH-AND-LINKS.md).
 # ROOM_GRACE_MS = "45000"
 # TURN_URL = "turn:your-turn-host:3478,turns:your-turn-host:5349"
 # TURN_USER = ""
+
+# Console events contain only explicitly sanitized operation categories/statuses.
+# Invocation logs are disabled because legacy WebSocket URLs contain session tokens.
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = false

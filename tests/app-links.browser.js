@@ -16,17 +16,17 @@ test('room links survive design redirect/login and native warm taps preserve a l
  const hostAccount = await signup('host'), guestAccount = await signup('guest'), otherAccount = await signup('other');
  browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-features=WebRtcHideLocalIpsWithMdns', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'] });
  const errors = [];
- const pageFor = async (account, native = false) => {
+ const pageFor = async (account, native = false, pending = null) => {
   const context = await browser.newContext(); await context.grantPermissions(['microphone'], { origin: base });
-  await context.addInitScript(({ account, native }) => {
+  await context.addInitScript(({ account, native, pending }) => {
    if (account) localStorage.setItem('pw_tok', account.token);
    if (native) {
     window.nativeListeners = {}; window.nativeCalls = []; window.documentIdentity = Math.random();
     window.Capacitor = { getPlatform: () => 'android',
      addListener: (plugin, event, callback) => { nativeListeners[plugin + ':' + event] = callback; return Promise.resolve({ remove() {} }); },
-     nativePromise: async (plugin, method, options) => { nativeCalls.push({ plugin, method, options }); return method === 'prepareNotifications' ? { enabled: false } : method === 'startRoom' ? { notificationsEnabled: true } : {}; } };
+     nativePromise: async (plugin, method, options) => { nativeCalls.push({ plugin, method, options }); return plugin === 'NavigationPlugin' && method === 'getPending' ? (pending || {}) : method === 'prepareNotifications' ? { enabled: false } : method === 'startRoom' ? { notificationsEnabled: true } : {}; } };
    }
-  }, { account, native });
+  }, { account, native, pending });
   const page = await context.newPage(); page.on('pageerror', error => errors.push(error.message)); return page;
  };
  const host = await pageFor(hostAccount, true); await host.goto(base + '/neon');
@@ -35,7 +35,7 @@ test('room links survive design redirect/login and native warm taps preserve a l
  const original = await host.evaluate(() => ({ room: S.room.id, track: R.mic.id, document: documentIdentity }));
  const guest = await pageFor(null);
  await guest.addInitScript(() => localStorage.setItem('pw_design', 'green'));
- await guest.goto(base + '/neon#room=' + original.room);
+ await guest.goto(base + '/room/' + original.room);
  await guest.waitForFunction(() => S.ov?.t === 'auth'); assert.equal(new URL(guest.url()).pathname, '/');
  assert(await guest.evaluate(() => !!localStorage.getItem('pw_pending_navigation')));
  if (await guest.locator('#an').count()) await guest.click('#as');
@@ -48,8 +48,8 @@ test('room links survive design redirect/login and native warm taps preserve a l
  await host.waitForFunction(() => S.room.members.length === 2);
  // A fresh document receives the room list before the server restores its existing seat.
  // The destination must wait so a restored host still gets the leave/handoff confirmation.
- const cold = await pageFor(hostAccount);
- await cold.goto(base + '/neon#room=' + destination); await cold.waitForSelector('#mb [data-c]');
+ const cold = await pageFor(hostAccount, true, { id: 'cold-link', kind: 'room', target: destination, time: Date.now() });
+ await cold.goto(base + '/neon'); await cold.waitForSelector('#mb [data-c]');
  assert.equal(await cold.evaluate(() => S.room?.id), original.room);
  await cold.click('#mb [data-c]'); await cold.context().close();
  const deliver = id => host.evaluate(({ target, id }) => nativeListeners['NavigationPlugin:navigation']({ id, kind: 'room', target }), { target: destination, id });

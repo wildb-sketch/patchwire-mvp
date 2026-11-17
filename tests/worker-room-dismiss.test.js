@@ -3,18 +3,21 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const turn = require('../lib/turn'), push = require('../lib/push'), links = require('../lib/links');
+const turn = require('../lib/turn'), push = require('../lib/push'), links = require('../lib/links'), safetyLib = require('../lib/safety');
 function fixture(env = {}, turnOptions = {}) {
  const source = fs.readFileSync(path.join(__dirname, '../cloudflare/src/worker.js'), 'utf8')
   .replace("import { DurableObject } from 'cloudflare:workers';", '')
   .replace("import turn from '../../lib/turn.js';", '').replace("import push from '../../lib/push.js';", '').replace("import links from '../../lib/links.js';", '')
+  .replace(/^import .+;$/gm, '')
   .replace('export default {', 'const worker = {').replace('export class Hub', 'class Hub');
- const context = vm.createContext({ turn, push, links, DurableObject: class {}, TextEncoder, Response, Request, URL, crypto: require('node:crypto').webcrypto, clearTimeout });
+ const context = vm.createContext({ security: require('../lib/security'), turn, push, links, DurableObject: class {}, TextEncoder, Response, Request, URL, crypto: require('node:crypto').webcrypto, clearTimeout });
  vm.runInContext(source + '\nglobalThis.Hub=Hub;', context);
  const hub = Object.create(context.Hub.prototype), messages = [];
- Object.assign(hub, { env, turn: turn.createTurnService(env, turnOptions), hits: new Map(), D: { users: { u: { id: 'u', nick: 'Guest' }, h: { id: 'h', nick: 'Host' } }, sessions: { auth: 'u' } },
+ Object.assign(hub, { env, turn: turn.createTurnService(env, turnOptions), hits: new Map(), D: { users: { u: { id: 'u', nick: 'Guest' }, h: { id: 'h', nick: 'Host' } }, sessions: { auth: 'u' }, blocks: [], follows: [], friends: [] },
   grace: new Map(), roomOf: new Map([['u','r'], ['h','r']]), rooms: new Map(),
   online: new Map([['u', new Set([{ send: value => messages.push(JSON.parse(value)) }])]]) });
+ hub.safety = safetyLib.createSafety({ data: hub.D, areFriends: () => false });
+ hub.sql = { exec: () => ({ toArray: () => [{ ok: 1 }] }) };
  const room = { id: 'r', title: 'Test', host: 'h', members: new Map([['u', { role: 'listener', leaveToken: 'private-lease' }], ['h', { role: 'speaker' }]]) };
  hub.rooms.set('r', room);
  const leave = async (auth, roomId, leaveToken) => {

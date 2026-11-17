@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test tests/*.test.js",
-    "test:webrtc": "node --test tests/*.browser.js",
+    "test:webrtc": "node --test --test-concurrency=1 tests/*.browser.js",
     "test:worker": "node --test tests/*.runtime.js"
   },
   "keywords": [],
