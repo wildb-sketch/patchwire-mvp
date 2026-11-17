@@ -20,7 +20,7 @@ async function setup(t) {
    send:(uid,data)=>{if(!state.ready)return false;if(data.s)trace.push({id,to:uid,type:data.s.type,offerId:data.offerId,answerTo:data.answerTo});else if(data.c)trace.push({id,type:'candidate',ufrag:data.c.usernameFragment});queueMicrotask(()=>audio[uid].receive(id,JSON.parse(JSON.stringify(data))));return true},
    onStatus:(uid,status)=>statuses.push({id,uid,status}),onError:(uid,e)=>errors.push({id,uid,message:e.message})});
   audio.a=state.make('a');audio.b=state.make('b');
-  audio.a.connect('b',true);audio.b.connect('a',true); // Deliberate initial offer collision.
+  audio.a.connect('b',true);audio.b.connect('a',true); // Simultaneous requests; the transport elects one offer owner.
   state.initial=[audio.a.peers.b.pc,audio.b.peers.a.pc];
   state.inbound=async()=>Promise.all([audio.a.peers.b.pc,audio.b.peers.a.pc].map(async pc=>{let bytes=0;for(const s of (await pc.getStats()).values())if(s.type==='inbound-rtp'&&s.kind==='audio')bytes+=s.bytesReceived||0;return bytes}));
  });
@@ -31,7 +31,7 @@ async function stable(page) {
  try { await page.waitForFunction(()=>Object.values(rtc.audio).every(a=>Object.values(a.peers).every(p=>p.pc.connectionState==='connected'&&p.pc.signalingState==='stable')),{},{timeout:20000}); }
  catch(error){console.error('RTC recovery diagnostics',JSON.stringify(await page.evaluate(()=>({errors:rtc.errors,trace:rtc.trace,states:Object.values(rtc.audio).flatMap(a=>Object.values(a.peers).map(p=>({state:p.pc.connectionState,ice:p.pc.iceConnectionState,signaling:p.pc.signalingState,attempts:p.attempts,queued:p.candidates.length,gathering:p.pc.iceGatheringState,media:p.pc.getTransceivers().map(t=>({mid:t.mid,direction:t.direction,current:t.currentDirection,stopped:t.stopped})),local:p.pc.localDescription?.sdp.match(/^(?:m=|a=ice-ufrag:|a=inactive|a=sendrecv|a=recvonly|a=sendonly).*$/gm),remote:p.pc.remoteDescription?.sdp.match(/^(?:m=|a=ice-ufrag:|a=inactive|a=sendrecv|a=recvonly|a=sendonly).*$/gm),mdns:!!p.pc.localDescription?.sdp.includes('.local')})))}))));throw error;}
 }
-test('real WebRTC survives simultaneous initial offers and simultaneous ICE restarts', {timeout:30000}, async t=>{
+test('real WebRTC survives simultaneous connection attempts and ICE restarts', {timeout:30000}, async t=>{
  const page=await setup(t);
  const before=await page.evaluate(async()=>{rtc.beforeUfrag=rtc.initial[0].localDescription.sdp.match(/a=ice-ufrag:(.+)/)[1];const bytes=await rtc.inbound();rtc.audio.a.recoverAll();rtc.audio.b.recoverAll();return bytes});
  await page.waitForFunction(()=>rtc.initial[0].localDescription.sdp.match(/a=ice-ufrag:(.+)/)[1]!==rtc.beforeUfrag);await stable(page);

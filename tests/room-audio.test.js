@@ -14,9 +14,9 @@ class FakePeer {
  async addIceCandidate(c) { this.candidates.push(c); }
  close() { this.closed=true; }
 }
-function fixture(self='a',other='b') {
+function fixture(self='a',other='b',coordination=false) {
  const sent=[],statuses=[],timers=new Map(),track={enabled:false}; let next=0,ready=true,member=true,refreshes=0;
- const audio=createRoomAudio({selfId:()=>self,isMember:()=>member,getIce:()=>[],refreshIce:async()=>{refreshes++;return [{urls:'turn:configured.example'}];},getTrack:()=>track,signalingReady:()=>ready,
+ const audio=createRoomAudio({coordinateOffers:coordination,selfId:()=>self,isMember:()=>member,getIce:()=>[],refreshIce:async()=>{refreshes++;return [{urls:'turn:configured.example'}];},getTrack:()=>track,signalingReady:()=>ready,
   send:(uid,d)=>{sent.push(d);return ready;},onStatus:(u,s)=>statuses.push(s),PeerConnection:FakePeer,
   setTimeout:(fn,delay)=>{timers.set(++next,{fn,delay});return next;},clearTimeout:id=>timers.delete(id)});
  return {audio,sent,statuses,timers,track,other,setReady:v=>{ready=v;},setMember:v=>{member=v;},get refreshes(){return refreshes;},
@@ -124,4 +124,11 @@ test('the negotiated SDP MID wins even when rollback left two associated audio s
  p.pc.getTransceivers=()=>[orphan,active];
  await f.audio.receive('b',{s:{type:'offer',sdp:'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\na=sendrecv\r\na=ice-ufrag:new\r\n'}});
  assert.equal(active.sender.track,f.track);assert.equal(orphan.sender.track,null);assert.equal(orphan.direction,'inactive');assert.equal(f.track.enabled,false);
+});
+
+test('simultaneous reconnects use one offer owner instead of restarting two ICE gatherers',async()=>{
+ const leader=fixture('a','b',true),follower=fixture('b','a',true);
+ leader.audio.connect('b',true);const p=follower.audio.connect('a',true);await leader.settle();await follower.settle();
+ assert(leader.sent.some(d=>d.s?.type==='offer'));assert.equal(p.pc.offers.length,0);assert(follower.sent.some(d=>d.negotiate));
+ await follower.audio.receive('a',leader.sent.find(d=>d.s));assert.equal(p.pc.rollbacks,0);assert.equal(p.coordinated,true);
 });
