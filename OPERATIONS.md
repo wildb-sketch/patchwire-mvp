@@ -71,7 +71,7 @@ This validates and writes a new `data.json` and `voice` directory without overwr
 
 ## Monitoring
 
-The Worker persists bounded operation counters and sanitized service/status failure records. Logs exclude email addresses, account IDs, request URLs, session/reset tokens, message contents and provider bodies. [Invocation logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) are disabled because legacy WebSocket URLs contain session tokens. Explicit sanitized console events remain enabled.
+The Worker persists bounded operation counters and sanitized service/status failure records, including relay failures and authenticated, rate-limited client audio recovery failures. Client reports contain a fixed event code, not peer identities or raw exception text. Logs exclude email addresses, account IDs, request URLs, session/reset tokens, message contents and provider bodies. [Invocation logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) are disabled because legacy WebSocket URLs contain session tokens. Explicit sanitized console events remain enabled.
 
 `/healthz` checks backend availability and reports relay/push/mail configuration plus backup health. Configuration presence does not prove delivery to Google or an email inbox. The private operator dashboard shows recent operation failures and backup timestamps.
 

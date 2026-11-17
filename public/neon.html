@@ -736,7 +736,7 @@ const audio=window.createRoomAudio({
  onStatus:(u,state)=>{if(!S.room?.members.some(m=>m.uid===u))return;
   if(state==='recovered')failedAudioPeers.delete(u);
   if(state==='reconnecting')toast('Reconnecting room audio…',null,{key:'connection'});
-  if(state==='failed'){failedAudioPeers.add(u);toast('Some room audio could not reconnect. Tap to retry.',()=>{const peers=[...failedAudioPeers];failedAudioPeers.clear();peers.forEach(uid=>audio.retry(uid))},{key:'audio-retry'})}
+  if(state==='failed'){if(!failedAudioPeers.has(u))api('/diagnostics','POST',{category:'audio',code:'recovery_failed'}).catch(()=>{});failedAudioPeers.add(u);toast('Some room audio could not reconnect. Tap to retry.',()=>{const peers=[...failedAudioPeers];failedAudioPeers.clear();peers.forEach(uid=>audio.retry(uid))},{key:'audio-retry'})}
  },
  onError:(u,e)=>console.debug('Room audio recovery',u,e.name||'connection error')
 });

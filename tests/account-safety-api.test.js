@@ -20,6 +20,10 @@ test('real HTTP and WebSocket flows enforce blocks, private room discovery, host
   const wait = async predicate => { const deadline = Date.now() + 5000; while (Date.now() < deadline) { const i = queue.findIndex(predicate); if (i >= 0) return queue.splice(i, 1)[0]; await new Promise(resolve => setTimeout(resolve, 10)); } throw Error('Missing expected socket event'); };
   await wait(event => event.type === 'rooms'); return { ws, wait, queue };
  };
+ assert.equal((await api('/diagnostics', null, {category:'audio',code:'recovery_failed'})).status,401);
+ assert.equal((await api('/diagnostics', host, {category:'audio',code:'recovery_failed',text:'private-fixture-content'})).status,200);
+ const telemetry=await (await fetch(base+'/internal/ops/status',{headers:{Authorization:'Bearer '+'f'.repeat(64)}})).json();
+ assert.equal(telemetry.monitoring.lastFailure.category,'client_audio');assert(!JSON.stringify(telemetry).includes('private-fixture-content'));
  const h = await connect(host), g = await connect(guest), o = await connect(outsider);
  h.ws.send(JSON.stringify({ type: 'room:create', title: 'Private fixture', audience: 'followers' })); const room = (await h.wait(event => event.type === 'room:joined')).room;
  const hidden = await g.wait(event => event.type === 'rooms'); assert(!hidden.rooms.some(r => r.id === room.id));

@@ -233,6 +233,11 @@ export class Hub extends DurableObject {
       if (b.dm !== undefined) me.dm = b.dm === 'friends' ? 'friends' : 'everyone';
       this.put('user', me.id, me); return json(200, this.own(me));
     }
+    if (route === 'POST /api/diagnostics') {
+      if (b.category !== 'audio' || b.code !== 'recovery_failed') return json(400, { error: 'Unsupported diagnostic event' });
+      if (this.limited(me.id, 'diagnostics', 10, 60000)) return json(429, { error: 'Try again shortly' });
+      this.monitor.record('client_audio', 503); return json(200, {});
+    }
     if (route === 'POST /api/account/request-verification') return json(200, await this.accounts.requestVerification(me.id), { 'Cache-Control': 'no-store' });
     if (route === 'GET /api/blocks') return json(200, D.blocks.filter(b => b.by === me.id).map(b => D.users[b.who]).filter(Boolean).map(user => this.pub(user)));
     if (route === 'POST /api/block' || route === 'POST /api/unblock') {

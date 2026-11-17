@@ -4,7 +4,14 @@ const { createTurnService, relayFailure } = require('./lib/turn');
 const turn = createTurnService(process.env);
 const { createFcm, createPushRegistry } = require('./lib/push');
 const links = require('./lib/links');
-const pushSender = createFcm(process.env, { onFailure: result => console.warn('WhassabiPush delivery failed', result) });
+const { createMailer, createAccounts } = require('./lib/accounts');
+const { createSafety } = require('./lib/safety');
+const { createLimiter, problem, parseBody } = require('./lib/security');
+const { createMonitor } = require('./lib/operations');
+const { createBackups } = require('./lib/backups');
+const { fileBucket, nodeSource } = require('./lib/node-backups');
+const { createOpsApi } = require('./lib/ops-api');
+const pushSender = createFcm(process.env, { onFailure: result => monitor.record('push', result.code || 0) });
 const PORT = process.env.PORT || 3000;
 const FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 const VOICE_DIR = process.env.VOICE_DIR || path.join(path.dirname(FILE), 'voice');
@@ -13,9 +20,21 @@ const KEY = process.env.ANTHROPIC_API_KEY, MODEL = process.env.CLAUDE_MODEL || '
 const LANGS = ['English', 'Turkish', 'Spanish', 'Japanese', 'Korean', 'Portuguese', 'French', 'German'];
 const LV = ['Beginner', 'Intermediate', 'Advanced'];
 
-let D = { users: {}, sessions: {}, msgs: [], reports: [], friends: [], follows: [], feed: [], pushDevices: {} };
-try { D = { ...D, ...JSON.parse(fs.readFileSync(FILE, 'utf8')) }; } catch {}
-let timer; const save = () => { clearTimeout(timer); timer = setTimeout(() => fs.writeFile(FILE, JSON.stringify(D), () => {}), 300); };
+let D = { users: {}, sessions: {}, msgs: [], reports: [], friends: [], follows: [], feed: [], pushDevices: {}, accountTokens: {}, rate: {}, blocks: [], ops: {} };
+let missingData = false;
+try { const stored = JSON.parse(fs.readFileSync(FILE, 'utf8')); if (!stored || typeof stored !== 'object' || Array.isArray(stored) || !stored.users || !Array.isArray(stored.msgs)) throw Error('Invalid data'); D = { ...D, ...stored }; }
+catch (error) { if (error.code === 'ENOENT') missingData = true; else throw Error('Stored data cannot be loaded. Recover a backup before starting this server.'); }
+const backupDirectory = process.env.BACKUP_DIR || path.join(path.dirname(FILE), 'backups');
+const snapshotRoot = path.join(backupDirectory, 'snapshots');
+if (missingData && fs.existsSync(snapshotRoot) && fs.readdirSync(snapshotRoot).some(id => fs.existsSync(path.join(snapshotRoot, id, 'manifest.json')))) throw Error('The data file is missing but backups exist. Recover a backup into a new directory before starting.');
+let timer;
+function flush() { const temp = FILE + '.tmp'; fs.writeFileSync(temp, JSON.stringify(D), { mode: 0o600 }); fs.renameSync(temp, FILE); }
+const save = () => { clearTimeout(timer); timer = setTimeout(flush, 300); };
+const durableSave = () => { clearTimeout(timer); flush(); };
+D.ops ||= {};
+const monitor = createMonitor({ state: D.ops.monitor ||= {}, save: save, log: value => console.warn(JSON.stringify(value)) });
+const backups = createBackups({ bucket: fileBucket(backupDirectory), source: nodeSource(D, VOICE_DIR), status: D.ops.backup ||= {}, saveStatus: save, onEvent: (category, status) => monitor.record(category, status) });
+const operator = createOpsApi({ env: process.env, monitor, backups, reports: () => D.reports.map(r => ({ ...r, id: r.id || r.ts + ':' + r.by })), updateReport: (id, status) => { const item = D.reports.find(r => (r.id || r.ts + ':' + r.by) === id); if (!item) return false; item.status = status; item.reviewedAt = Date.now(); durableSave(); return true; } });
 const pushRegistry = createPushRegistry({ devices: D.pushDevices, sender: pushSender, sessionOwner: session => D.sessions[session], put: save, remove: save });
 function deliverMessage(message, kind = 'message', target = message.from) {
   D.msgs.push(message); save();
@@ -26,13 +45,16 @@ function deliverMessage(message, kind = 'message', target = message.from) {
 const hash = (pw, salt) => crypto.scryptSync(pw, salt, 32).toString('hex');
 const pub = u => ({ id: u.id, nick: u.nick, nat: u.nat, learn: u.learn, lv: u.lv, bio: u.bio || '', dm: u.dm === 'friends' ? 'friends' : 'everyone', ts: u.ts || 0,
   followers: D.follows.filter(f => f.b === u.id).length, following: D.follows.filter(f => f.a === u.id).length, hosted: u.hosted || 0, photo: u.photo ? u.photo.v : 0 });
+const own = u => ({ ...pub(u), email: u.email, emailVerified: !!u.emailVerified });
 const handleOf = u => String(u.nick || '').toLowerCase().replace(/\s+/g, '');
 const clean = (s, n) => String(s ?? '').trim().slice(0, n);
+const socketSessions = new WeakMap();
 const online = new Map(); // uid -> Set<ws>
 const hits = new Map();   // uid -> [timestamps] for rate limits
 const limited = (uid, kind, max, ms) => {
   const k = uid + kind, now = Date.now(), a = (hits.get(k) || []).filter(t => now - t < ms);
-  a.push(now); hits.set(k, a); return a.length > max;
+  if (a.length >= max) { hits.set(k, a); return true; }
+  a.push(now); hits.set(k, a); return false;
 };
 
 const frOf = (x, y) => D.friends.find(f => (f.a === x && f.b === y) || (f.a === y && f.b === x));
@@ -42,7 +64,7 @@ const frList = uid => {
   const out = { friends: [], incoming: [], outgoing: [] };
   for (const f of D.friends) {
     if (f.a !== uid && f.b !== uid) continue;
-    const o = f.a === uid ? f.b : f.a, u = D.users[o]; if (!u) continue;
+    const o = f.a === uid ? f.b : f.a, u = D.users[o]; if (!u || safety.blocked(uid, o)) continue;
     const p = { ...pub(u), on: online.has(o) };
     if (f.status === 'accepted') out.friends.push(p); else if (f.by === uid) out.outgoing.push(p); else out.incoming.push(p);
   }
@@ -50,9 +72,11 @@ const frList = uid => {
 };
 const pushFr = (...ids) => ids.forEach(i => sendTo(i, { type: 'friends' }));
 const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
-const readBody = (req, max = 20000) => new Promise((ok, no) => {
-  let b = ''; req.on('data', c => { b += c; if (b.length > max) { req.destroy(); no(); } });
-  req.on('end', () => { try { ok(JSON.parse(b || '{}')); } catch { ok({}); } });
+const readBody = (req, max = 20000) => new Promise((resolve, reject) => {
+  if (Number(req.headers['content-length']) > max) return reject(problem(413, 'Request too large'));
+  const chunks = []; let size = 0, failed = false;
+  req.on('data', chunk => { if (failed) return; size += chunk.length; if (size > max) { failed = true; reject(problem(413, 'Request too large')); } else chunks.push(chunk); });
+  req.on('error', reject); req.on('end', () => { if (!failed) resolve(parseBody(Buffer.concat(chunks).toString('utf8'))); });
 });
 const authUser = tok => D.users[D.sessions[tok]];
 const newSession = uid => { const t = crypto.randomBytes(24).toString('hex'); D.sessions[t] = uid; save(); return t; };
@@ -62,9 +86,37 @@ const fields = b => ({
   lv: LV.includes(b.lv) ? b.lv : 'Beginner',
 });
 
+const mail = createMailer(process.env, { onFailure: outcome => monitor.record('mail', outcome.status) });
+const accountLimiter = createLimiter({ state: D.rate, put: durableSave, remove: save });
+const accounts = createAccounts({ users: D.users, tokens: D.accountTokens, limiter: accountLimiter, mail,
+  putToken: durableSave, removeToken: durableSave, userChanged: durableSave,
+  hashPassword: password => { const salt = crypto.randomBytes(16).toString('hex'); return { salt, pw: hash(password, salt) }; },
+  revokeUser: uid => {
+    for (const [session, owner] of Object.entries(D.sessions)) if (owner === uid) { pushRegistry.logout(session); delete D.sessions[session]; }
+    durableSave(); for (const ws of online.get(uid) || []) ws.close(4401, 'session revoked'); leave(uid);
+  },
+});
+const safety = createSafety({ data: D, areFriends, put: durableSave, remove: save, separate: (a, b) => {
+  const room = rooms.get(roomOf.get(a));
+  if (room?.members.has(b)) removeMember(room, room.host === a ? b : a, 'You left a room shared with a blocked user.');
+  pushFr(a, b); sendTo(a, { type: 'safety:changed' }); sendTo(b, { type: 'safety:changed' }); bcastRooms();
+} });
+
 async function api(req, res, url) {
   const route = req.method + ' ' + url.pathname;
   const b = req.method === 'GET' ? {} : await readBody(req, url.pathname === '/api/me/photo' ? 300000 : url.pathname === '/api/voice' ? 700000 : 20000);
+  res.setHeader('Cache-Control', 'no-store');
+  const ip = req.socket.remoteAddress || 'unknown';
+  if (route === 'GET /api/account/status') return send(res, 200, { emailAvailable: mail.configured });
+  if (route === 'POST /api/account/request-reset') return send(res, 200, await accounts.requestReset(b.email, ip));
+  if (route === 'POST /api/account/reset' || route === 'POST /api/account/verify') {
+    if (!await accounts.allow('consume', ip, b.token)) return send(res, 429, { error: 'Too many requests. Try again later.' });
+    return send(res, 200, route.endsWith('/reset') ? await accounts.reset(b.token, b.password) : await accounts.verify(b.token));
+  }
+  if (route === 'POST /api/signup' || route === 'POST /api/login') {
+    if (!await accounts.allow(route.endsWith('/signup') ? 'signup' : 'login', ip, b.email)) return send(res, 429, { error: 'Too many attempts. Try again later.' });
+    if (String(b.password || '').length > (route.endsWith('/signup') ? 128 : 4096)) return send(res, 400, { error: 'That password is too long.' });
+  }
   if (route === 'POST /api/signup') {
     const email = clean(b.email, 120).toLowerCase(), nick = clean(b.nick, 20);
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return send(res, 400, { error: 'Enter a valid email' });
@@ -74,12 +126,12 @@ async function api(req, res, url) {
     if (Object.values(D.users).some(u => u.email === email)) return send(res, 409, { error: 'That email already has an account' });
     const salt = crypto.randomBytes(16).toString('hex'), id = crypto.randomBytes(6).toString('hex');
     D.users[id] = { id, email, salt, pw: hash(b.password, salt), nick, ...fields(b), bio: '', ts: Date.now() };
-    return send(res, 200, { token: newSession(id), me: pub(D.users[id]) });
+    return send(res, 200, { token: newSession(id), me: own(D.users[id]) });
   }
   if (route === 'POST /api/login') {
     const u = Object.values(D.users).find(x => x.email === clean(b.email, 120).toLowerCase());
     if (!u || hash(String(b.password || ''), u.salt) !== u.pw) return send(res, 401, { error: 'Wrong email or password' });
-    return send(res, 200, { token: newSession(u.id), me: pub(u) });
+    return send(res, 200, { token: newSession(u.id), me: own(u) });
   }
   if (route === 'POST /api/push/refresh') {
     res.setHeader('Cache-Control', 'no-store');
@@ -98,7 +150,7 @@ async function api(req, res, url) {
     }
     return send(res, 200, {});
   }
-  if (route === 'GET /api/me') return send(res, 200, pub(me));
+  if (route === 'GET /api/me') return send(res, 200, own(me));
   if (route === 'PUT /api/me') {
     Object.assign(me, fields({ ...me, ...b }));
     if (b.nick !== undefined && clean(b.nick, 20)) {
@@ -109,9 +161,21 @@ async function api(req, res, url) {
     }
     if (b.bio !== undefined) me.bio = clean(b.bio, 200);
     if (b.dm !== undefined) me.dm = b.dm === 'friends' ? 'friends' : 'everyone';
-    save(); return send(res, 200, pub(me));
+    save(); return send(res, 200, own(me));
   }
-  if (route === 'POST /api/logout') { pushRegistry.logout(tok); delete D.sessions[tok]; save(); return send(res, 200, {}); }
+  if (route === 'POST /api/diagnostics') {
+    if (b.category !== 'audio' || b.code !== 'recovery_failed') return send(res, 400, { error: 'Unsupported diagnostic event' });
+    if (limited(me.id, 'diagnostics', 10, 60000)) return send(res, 429, { error: 'Try again shortly' });
+    monitor.record('client_audio', 503); return send(res, 200, {});
+  }
+  if (route === 'POST /api/account/request-verification') return send(res, 200, await accounts.requestVerification(me.id));
+  if (route === 'GET /api/blocks') return send(res, 200, D.blocks.filter(b => b.by === me.id).map(b => D.users[b.who]).filter(Boolean).map(pub));
+  if (route === 'POST /api/block' || route === 'POST /api/unblock') {
+    if (limited(me.id, 'blocks', 30, 60000)) return send(res, 429, { error: 'Too many requests. Try again shortly.' });
+    if (route === 'POST /api/block') safety.block(me.id, clean(b.id, 20)); else safety.unblock(me.id, clean(b.id, 20));
+    durableSave(); bcastRooms(); return send(res, 200, {});
+  }
+  if (route === 'POST /api/logout') { pushRegistry.logout(tok); delete D.sessions[tok]; for (const ws of online.get(me.id) || []) if (socketSessions.get(ws) === tok) ws.close(4401, 'signed out'); save(); return send(res, 200, {}); }
   if (route === 'GET /api/push/status') { res.setHeader('Cache-Control', 'no-store'); return send(res, 200, { configured: pushSender.configured }); }
   if (route === 'POST /api/push/register') {
     res.setHeader('Cache-Control', 'no-store');
@@ -123,8 +187,9 @@ async function api(req, res, url) {
   if (req.method === 'POST' && invitation) {
     const room = rooms.get(invitation[1]), to = D.users[clean(b.to, 20)];
     if (!room || !room.members.has(me.id)) return send(res, 404, { error: 'That room is no longer available' });
-    if (!to || !areFriends(me.id, to.id)) return send(res, 403, { error: 'Invite someone from your friends list' });
+    if (!to || safety.blocked(me.id, to.id) || !areFriends(me.id, to.id)) return send(res, 403, { error: 'Invite someone from your friends list' });
     if (room.audience === 'followers' && room.host !== to.id && !areFriends(room.host, to.id) && !D.follows.some(f => f.a === to.id && f.b === room.host)) return send(res, 403, { error: 'This room is for followers of the host' });
+    if (!safety.visibleRoom(to.id, room)) return send(res, 403, { error: 'This room is unavailable for that user.' });
     if (room.members.has(to.id)) return send(res, 409, { error: 'They are already in this room' });
     if (limited(me.id, 'roomInvite', 10, 60000)) return send(res, 429, { error: 'Too many invitations. Try again shortly' });
     const m = { id: crypto.randomBytes(6).toString('hex'), from: me.id, to: to.id, kind: 'room_invite', roomId: room.id,
@@ -135,7 +200,7 @@ async function api(req, res, url) {
     res.setHeader('Cache-Control', 'no-store');
     if (limited(me.id, 'ice', 30, 60000)) { res.setHeader('Retry-After', '60'); return send(res, 429, { error: 'Please wait before retrying voice.' }); }
     try { return send(res, 200, await turn.ice(me.id)); }
-    catch (error) { res.setHeader('Retry-After', '5'); return send(res, 503, relayFailure(error)); }
+    catch (error) { monitor.record('relay', 503); res.setHeader('Retry-After', '5'); return send(res, 503, relayFailure(error)); }
   }
   if (route === 'PUT /api/me/photo') {
     const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+\/=]+)$/.exec(String(b.data || ''));
@@ -143,12 +208,12 @@ async function api(req, res, url) {
     const buf = Buffer.from(m[2], 'base64'), head = buf.subarray(0, 4);
     const okSig = head.subarray(0, 2).toString('hex') === 'ffd8' || head.toString('hex') === '89504e47' || head.toString() === 'RIFF';
     if (buf.length > 150000 || !okSig) return send(res, 400, { error: 'That photo is too large or not a valid image' });
-    me.photo = { type: m[1], data: m[2], v: Date.now() }; save(); return send(res, 200, pub(me));
+    me.photo = { type: m[1], data: m[2], v: Date.now() }; save(); return send(res, 200, own(me));
   }
-  if (route === 'POST /api/me/photo/remove') { delete me.photo; save(); return send(res, 200, pub(me)); }
+  if (route === 'POST /api/me/photo/remove') { delete me.photo; save(); return send(res, 200, own(me)); }
   if (route === 'POST /api/voice') {
     const to = clean(b.to, 20), t = D.users[to];
-    if (!t || t.id === me.id) return send(res, 404, { error: 'User not found' });
+    if (!t || t.id === me.id || safety.blocked(me.id, t.id)) return send(res, 404, { error: 'User not found' });
     if (t.dm === 'friends' && !areFriends(me.id, to)) return send(res, 403, { error: 'This person only accepts messages from friends' });
     if (limited(me.id, 'voice', 10, 60e3)) return send(res, 429, { error: 'Slow down a little' });
     const m = /^data:(audio\/[a-z0-9.+-]+)(?:;[^;,]*)*;base64,([A-Za-z0-9+\/=]+)$/i.exec(String(b.data || ''));
@@ -156,7 +221,7 @@ async function api(req, res, url) {
     const buf = Buffer.from(m[2], 'base64');
     if (buf.length < 200 || buf.length > 450000) return send(res, 400, { error: 'Voice message is too short or too long' });
     const id = crypto.randomBytes(6).toString('hex'), dur = Math.max(1, Math.min(60, Math.round(Number(b.dur) || 1)));
-    try { fs.writeFileSync(path.join(VOICE_DIR, id + '.bin'), buf); } catch { return send(res, 500, { error: 'Could not save the voice message' }); }
+    try { fs.writeFileSync(path.join(VOICE_DIR, id + '.bin'), buf); } catch { monitor.record('http', 500); return send(res, 500, { error: 'Could not save the voice message' }); }
     const msg = { id, from: me.id, to, kind: 'voice', dur, mime: m[1].toLowerCase(), t: '🎤 Voice message', ts: Date.now() };
     deliverMessage(msg);
     return send(res, 200, { m: msg });
@@ -168,33 +233,33 @@ async function api(req, res, url) {
     catch { return send(res, 404, { error: 'Audio is no longer available' }); }
   }
   if (route === 'GET /api/follows') {
-    const list = ids => ids.map(i => D.users[i]).filter(Boolean).map(u => ({ ...pub(u), on: online.has(u.id) }));
+    const list = ids => ids.filter(i => !safety.blocked(me.id, i)).map(i => D.users[i]).filter(Boolean).map(u => ({ ...pub(u), on: online.has(u.id) }));
     return send(res, 200, { following: list(D.follows.filter(f => f.a === me.id).map(f => f.b)), followers: list(D.follows.filter(f => f.b === me.id).map(f => f.a)) });
   }
   if (route === 'POST /api/follow') {
-    const t = D.users[clean(b.id, 20)]; if (!t || t.id === me.id) return send(res, 404, { error: 'User not found' });
+    const t = D.users[clean(b.id, 20)]; if (!t || t.id === me.id || safety.blocked(me.id, t.id)) return send(res, 404, { error: 'User not found' });
     if (!D.follows.some(f => f.a === me.id && f.b === t.id)) {
       if (limited(me.id, 'fol', 60, 3600e3)) return send(res, 429, { error: 'Too many requests. Try again later' });
-      D.follows.push({ a: me.id, b: t.id }); save(); sendTo(t.id, { type: 'follows' });
+      D.follows.push({ a: me.id, b: t.id }); save(); sendTo(t.id, { type: 'follows' }); bcastRooms();
     }
     return send(res, 200, {});
   }
-  if (route === 'POST /api/unfollow') { D.follows = D.follows.filter(f => !(f.a === me.id && f.b === clean(b.id, 20))); save(); return send(res, 200, {}); }
+  if (route === 'POST /api/unfollow') { D.follows = D.follows.filter(f => !(f.a === me.id && f.b === clean(b.id, 20))); save(); bcastRooms(); return send(res, 200, {}); }
   if (route === 'GET /api/feed') {
     const set = new Set([me.id, ...friendIds(me.id), ...D.follows.filter(f => f.a === me.id).map(f => f.b)]);
-    return send(res, 200, D.feed.filter(x => set.has(x.uid)).slice(-40).reverse().map(x => { const rm = rooms.get(x.rid), u = D.users[x.uid]; return { ...x, host: u ? pub(u) : null, live: !!rm, n: rm ? rm.members.size : 0 }; }));
+    return send(res, 200, D.feed.filter(x => set.has(x.uid) && !safety.blocked(me.id, x.uid)).slice(-40).reverse().map(x => { const rm = rooms.get(x.rid), u = D.users[x.uid]; return { ...x, host: u ? pub(u) : null, live: !!rm, n: rm ? rm.members.size : 0 }; }));
   }
   if (route === 'GET /api/friends') return send(res, 200, frList(me.id));
   if (route === 'GET /api/users/search') {
     const q = clean(url.searchParams.get('q'), 20).toLowerCase().replace(/\s+/g, '');
     if (q.length < 2) return send(res, 200, []);
-    return send(res, 200, Object.values(D.users).filter(u => u.id !== me.id && handleOf(u).includes(q)).slice(0, 20).map(u => ({ ...pub(u), on: online.has(u.id) })));
+    return send(res, 200, Object.values(D.users).filter(u => u.id !== me.id && !safety.blocked(me.id, u.id) && handleOf(u).includes(q)).slice(0, 20).map(u => ({ ...pub(u), on: online.has(u.id) })));
   }
   if (route === 'POST /api/friends/request') {
-    const t = D.users[clean(b.id, 20)]; if (!t || t.id === me.id) return send(res, 404, { error: 'User not found' });
+    const t = D.users[clean(b.id, 20)]; if (!t || t.id === me.id || safety.blocked(me.id, t.id)) return send(res, 404, { error: 'User not found' });
     const f = frOf(me.id, t.id);
     if (f) {
-      if (f.status === 'pending' && f.by === t.id) { f.status = 'accepted'; save(); pushFr(me.id, t.id); return send(res, 200, { status: 'accepted' }); }
+      if (f.status === 'pending' && f.by === t.id) { f.status = 'accepted'; save(); pushFr(me.id, t.id); bcastRooms(); return send(res, 200, { status: 'accepted' }); }
       return send(res, 200, { status: f.status });
     }
     if (limited(me.id, 'fr', 30, 3600e3)) return send(res, 429, { error: 'Too many requests. Try again later' });
@@ -205,21 +270,22 @@ async function api(req, res, url) {
     const f = frOf(me.id, clean(b.id, 20));
     if (!f || f.status !== 'pending' || f.by === me.id) return send(res, 404, { error: 'No such request' });
     if (b.accept) f.status = 'accepted'; else D.friends.splice(D.friends.indexOf(f), 1);
-    save(); pushFr(f.a, f.b); return send(res, 200, {});
+    save(); pushFr(f.a, f.b); bcastRooms(); return send(res, 200, {});
   }
   if (route === 'POST /api/friends/remove') {
     const f = frOf(me.id, clean(b.id, 20));
-    if (f) { D.friends.splice(D.friends.indexOf(f), 1); save(); pushFr(f.a, f.b); }
+    if (f) { D.friends.splice(D.friends.indexOf(f), 1); save(); pushFr(f.a, f.b); bcastRooms(); }
     return send(res, 200, {});
   }
   if (route === 'GET /api/users') {
-    return send(res, 200, Object.values(D.users).filter(u => u.id !== me.id).map(u => ({ ...pub(u), on: online.has(u.id) })));
+    return send(res, 200, Object.values(D.users).filter(u => u.id !== me.id && !safety.blocked(me.id, u.id)).map(u => ({ ...pub(u), on: online.has(u.id) })));
   }
   if (route === 'GET /api/messages') {
     return send(res, 200, D.msgs.filter(m => m.from === me.id || m.to === me.id).slice(-500));
   }
   if (route === 'POST /api/report') {
-    D.reports.push({ by: me.id, who: clean(b.id, 20), ts: Date.now() }); save(); return send(res, 200, {});
+    if (limited(me.id, 'reports', 10, 3600000)) return send(res, 429, { error: 'Too many reports. Try again later.' });
+    const id = safety.report(me.id, b); durableSave(); return send(res, 200, { id });
   }
   if (route === 'POST /api/ai') {
     if (!KEY) return send(res, 501, { error: 'Set ANTHROPIC_API_KEY on the server to enable translation' });
@@ -245,6 +311,10 @@ async function api(req, res, url) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try {
+    if (url.pathname.startsWith('/internal/ops/')) {
+      const response = await operator(new Request('http://operator.local' + url.pathname, { method: req.method, headers: { Authorization: req.headers.authorization || '' } }), () => readBody(req, 4096));
+      res.writeHead(response.status, Object.fromEntries(response.headers)); return res.end(await response.text());
+    }
     const redirect = links.roomRedirect(url.pathname);
     if (redirect) { res.writeHead(302, { Location: redirect, 'Cache-Control': 'no-store' }); return res.end(); }
     if (url.pathname === '/.well-known/assetlinks.json') { res.setHeader('Cache-Control', 'no-cache'); return send(res, 200, links.assetLinks(process.env.ANDROID_APP_LINK_SHA256)); }
@@ -254,20 +324,20 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': u.photo.type, 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
       return res.end(Buffer.from(u.photo.data, 'base64'));
     }
-    const ST = { '/app-navigation.js': ['text/javascript', 'app-navigation.js'], '/push-client.js': ['text/javascript', 'push-client.js'], '/room-heartbeat.js': ['text/javascript', 'room-heartbeat.js'], '/room-audio.js': ['text/javascript', 'room-audio.js'], '/manifest.webmanifest': ['application/manifest+json', 'manifest.webmanifest'], '/sw.js': ['text/javascript', 'sw.js'], '/icon-192.png': ['image/png', 'icon-192.png'], '/icon-512.png': ['image/png', 'icon-512.png'] };
+    const ST = { '/notices.js': ['text/javascript', 'notices.js'], '/app-navigation.js': ['text/javascript', 'app-navigation.js'], '/push-client.js': ['text/javascript', 'push-client.js'], '/room-heartbeat.js': ['text/javascript', 'room-heartbeat.js'], '/room-audio.js': ['text/javascript', 'room-audio.js'], '/manifest.webmanifest': ['application/manifest+json', 'manifest.webmanifest'], '/sw.js': ['text/javascript', 'sw.js'], '/icon-192.png': ['image/png', 'icon-192.png'], '/icon-512.png': ['image/png', 'icon-512.png'] };
     if (ST[url.pathname]) {
-      res.writeHead(200, { 'Content-Type': ST[url.pathname][0], 'Cache-Control': ['/sw.js','/room-audio.js','/room-heartbeat.js','/app-navigation.js','/push-client.js'].includes(url.pathname) ? 'no-cache' : 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff' });
+      res.writeHead(200, { 'Content-Type': ST[url.pathname][0], 'Cache-Control': ['/sw.js','/room-audio.js','/room-heartbeat.js','/app-navigation.js','/push-client.js','/notices.js'].includes(url.pathname) ? 'no-cache' : 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff' });
       return res.end(fs.readFileSync(path.join(__dirname, 'public', ST[url.pathname][1])));
     }
-    if (url.pathname === '/healthz') { res.writeHead(200, { 'X-Voice-Relay': turn.status, 'X-Voice-Relay-Provider': turn.provider, 'X-Push': pushSender.configured ? 'configured' : 'missing', 'Cache-Control': 'no-store' }); return res.end('ok'); }
+    if (url.pathname === '/healthz') { fs.accessSync(path.dirname(FILE), fs.constants.W_OK); res.writeHead(200, { 'X-Voice-Relay': turn.status, 'X-Voice-Relay-Provider': turn.provider, 'X-Push': pushSender.configured ? 'configured' : 'missing', 'X-Backup': backups.health(), 'X-Mail': mail.configured ? 'configured' : 'missing', 'Cache-Control': 'no-store' }); return res.end('ok'); }
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
-    const PG = { '/': 'index.html', '/index.html': 'index.html', '/neon': 'neon.html' };
+    const PG = { '/account.html': 'account.html', '/ops.html': 'ops.html', '/': 'index.html', '/index.html': 'index.html', '/neon': 'neon.html' };
     if (PG[url.pathname]) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', ...(['/account.html','/ops.html'].includes(url.pathname)?{'X-Frame-Options':'DENY','Content-Security-Policy':"frame-ancestors 'none'"}:{}) });
       return res.end(fs.readFileSync(path.join(__dirname, 'public', PG[url.pathname])));
     }
     res.writeHead(404); res.end('Not found');
-  } catch { if (!res.headersSent) send(res, 500, { error: 'Server error' }); }
+  } catch (error) { if (!error.status || error.status >= 500) monitor.record('http', error.status || 500); if (error.status === 413) res.setHeader('Connection', 'close'); if (!res.headersSent) send(res, error.status || 500, { error: error.status ? error.message : 'Server error' }); }
 });
 
 
@@ -279,7 +349,8 @@ const rooms = new Map(), roomOf = new Map();
 const view = r => ({ id: r.id, title: r.title, topic: r.topic, desc: r.desc || '', cover: r.cover || 0, audience: r.audience || 'everyone', lang: r.lang, host: r.host, hostNick: D.users[r.host]?.nick || '', n: r.members.size,
   members: [...r.members].map(([u, m]) => ({ uid: u, nick: D.users[u]?.nick || 'Guest', role: m.role, hand: m.hand, muted: !!m.muted, invited: !!m.invited })) });
 const sendTo = (uid, o) => { for (const c of online.get(uid) || []) c.send(JSON.stringify(o)); };
-const bcastRooms = () => { const o = JSON.stringify({ type: 'rooms', rooms: [...rooms.values()].map(view) }); for (const set of online.values()) for (const c of set) c.send(o); };
+const roomsFor = uid => [...rooms.values()].filter(room => safety.visibleRoom(uid, room)).map(view);
+const bcastRooms = () => { for (const [uid, set] of online) for (const ws of set) if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'rooms', rooms: roomsFor(uid) })); };
 const roomUpdate = r => { for (const u of r.members.keys()) sendTo(u, { type: 'room:state', room: view(r) }); };
 function leave(uid) {
   clearTimeout(grace.get(uid)); grace.delete(uid);
@@ -298,6 +369,9 @@ const releaseCur = (me, cur, err) => {
   if (cur.host === me.id && cur.members.size > 1) { err('Hand over or end your current room first'); return false; }
   leave(me.id); return true;
 };
+function removeMember(room, uid, reason) {
+  sendTo(uid, { type: 'room:removed', id: room.id, reason }); leave(uid);
+}
 function roomMsg(me, d) {
   const err = error => sendTo(me.id, { type: 'room:error', error, ...(d.type === 'room:join' ? { requestRoomId: clean(d.id, 20) } : {}) });
   const cur = rooms.get(roomOf.get(me.id));
@@ -313,8 +387,10 @@ function roomMsg(me, d) {
     sendTo(me.id, { type: 'room:joined', room: view(r), leaveToken: r.members.get(me.id).leaveToken }); return bcastRooms();
   }
   if (d.type === 'room:join') {
+    if (limited(me.id, 'join', 30, 60000)) return err('Too many room attempts. Try again shortly.');
     const r = rooms.get(d.id); if (!r) return err('That room has ended');
     if (r.audience === 'followers' && r.host !== me.id && !D.follows.some(f => f.a === me.id && f.b === r.host) && !areFriends(me.id, r.host)) return err('Only followers of ' + (D.users[r.host]?.nick || 'the host') + ' can join this room');
+    if (!safety.visibleRoom(me.id, r) || r.removed?.has(me.id)) return err('You cannot join this room.');
     if (cur === r) return;
     if (r.members.size >= MAXR) return err('This room is full (max ' + MAXR + ')');
     if (cur && !releaseCur(me, cur, err)) return;
@@ -330,6 +406,11 @@ function roomMsg(me, d) {
       cur.host = d.transfer;
     }
     return leave(me.id);
+  }
+  if (d.type === 'room:kick') {
+    if (cur.host !== me.id || d.uid === me.id || !cur.members.has(d.uid) || limited(me.id, 'kick', 20, 60000)) return;
+    cur.removed ||= new Set(); cur.removed.add(d.uid);
+    return removeMember(cur, d.uid, 'The host removed you from this room.');
   }
   if (d.type === 'room:hand') { cur.members.get(me.id).hand = !!d.on; return roomUpdate(cur); }
   if (d.type === 'room:role') {
@@ -380,10 +461,11 @@ const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16384 });
 wss.on('connection', (ws, req) => {
   const session = new URL(req.url, 'http://x').searchParams.get('token'), me = authUser(session);
   if (!me) return ws.close(4401);
+  socketSessions.set(ws, session);
   if (!online.has(me.id)) online.set(me.id, new Set());
   online.get(me.id).add(ws);
   if (online.get(me.id).size === 1) pushFr(...friendIds(me.id));
-  ws.send(JSON.stringify({ type: 'rooms', rooms: [...rooms.values()].map(view) }));
+  ws.send(JSON.stringify({ type: 'rooms', rooms: roomsFor(me.id) }));
   clearTimeout(grace.get(me.id)); grace.delete(me.id);
   const seat = rooms.get(roomOf.get(me.id));
   if (seat) {
@@ -394,11 +476,13 @@ wss.on('connection', (ws, req) => {
   ws.on('message', raw => {
     if (authUser(session)?.id !== me.id) { ws.close(4401, 'unauthorized'); return; }
     let d; try { d = JSON.parse(raw); } catch { return; }
+    if (!d || typeof d !== 'object' || Array.isArray(d)) return;
     if (d.type === 'ping') return ws.send(JSON.stringify({ type: 'pong' }));
     if (String(d.type).startsWith('room:')) return roomMsg(me, d);
     if (d.type !== 'msg') return;
     const t = clean(d.t, 500);
     if (!t || !D.users[d.to] || d.to === me.id) return;
+    if (safety.blocked(me.id, d.to)) return ws.send(JSON.stringify({ type: 'error', error: 'Messaging is unavailable for this user.' }));
     if (D.users[d.to].dm === 'friends' && !areFriends(me.id, d.to)) return ws.send(JSON.stringify({ type: 'error', error: 'This person only accepts messages from friends' }));
     if (limited(me.id, 'msg', 20, 10e3)) return ws.send(JSON.stringify({ type: 'error', error: 'Slow down a little' }));
     const m = { id: crypto.randomBytes(6).toString('hex'), from: me.id, to: d.to, t, ts: Date.now() };
@@ -411,4 +495,7 @@ wss.on('connection', (ws, req) => {
 });
 setInterval(() => wss.clients.forEach(ws => { if (!ws.alive) return ws.terminate(); ws.alive = false; ws.ping(); }), 30000);
 
+if (!backups.status.lastSuccess || Date.now() - backups.status.lastSuccess > 86400000) backups.run().catch(() => {});
+const backupTimer = setInterval(() => backups.run().catch(() => {}), 86400000); backupTimer.unref();
+process.once('SIGTERM', () => { clearTimeout(timer); try { flush(); process.exit(0); } catch { process.exit(1); } });
 server.listen(PORT, () => console.log('Patchwire running on http://localhost:' + PORT));
