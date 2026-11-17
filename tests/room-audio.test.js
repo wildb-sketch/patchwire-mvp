@@ -102,3 +102,10 @@ test('leaving during asynchronous SDP setup cannot send an old room offer',async
  f.audio.recoverAll();while(!started)await tick();f.audio.remove('b');finish();await f.settle();
  assert.equal(f.sent.length,0);assert.equal(f.timers.size,0);
 });
+
+test('a connected event from the old media path cannot cancel an unanswered restart offer',async()=>{
+ const f=fixture(),p=f.audio.connect('b');p.pc.connectionState='connected';p.pc.iceConnectionState='completed';
+ f.audio.recoverAll();await f.settle();p.pc.oniceconnectionstatechange();
+ assert.equal(p.pc.signalingState,'have-local-offer');assert.equal(p.recovering,true);assert.equal(f.timers.size,1);
+ await f.fire();assert.equal(p.attempts,2);
+});

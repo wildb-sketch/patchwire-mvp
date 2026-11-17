@@ -66,7 +66,7 @@
   }
   function connectionChanged(p) {
     if (!alive(p)) return;
-    if (connected(p.pc)) {
+    if (connected(p.pc) && p.pc.signalingState === 'stable') {
       const recovered = p.recovering;
       clearTimer(p); p.attempts = 0; p.exhausted = false; p.recovering = false;
       if (recovered) report(p, 'recovered');
