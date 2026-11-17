@@ -1,11 +1,13 @@
-# Whassabi Android test APK
+# Whassabi Android test APKs
 
-[Download the APK](https://github.com/wildb-sketch/patchwire-mvp/raw/refs/heads/android-test-download-20261117/whassabi-push-debug.apk)
+[Download the repeat-notification fix](https://github.com/wildb-sketch/patchwire-mvp/raw/refs/heads/android-test-download-20261117/whassabi-notifications-fix.apk)
 
-Android push and room-link test build for [PR #10](https://github.com/wildb-sketch/patchwire-mvp/pull/10), source deployment `2ffa3d888a81062f7234fe7a1a66db97cf2bb46b`. Its certificate matches the deployed Android App Links association.
+This update refreshes the conversation notification for every new event, shows a message count, and preserves notifications during background token checks. It includes the [PR #11](https://github.com/wildb-sketch/patchwire-mvp/pull/11) changes, with the same signing certificate used by the previous APK and deployed Android App Links association.
 
-Only the test APK and public download information are included. No private signing key or Firebase service-account credential is included.
+Android build, lint and notification sequence tests pass locally and on GitHub. Source deployment: `dabb172dbc96318c45476dae3e2fc923816e4dae`. Actual Google delivery and OEM behavior require phone testing.
 
-[Push setup guide](https://github.com/wildb-sketch/patchwire-mvp/blob/main/mobile/PUSH-AND-LINKS.md). Live push delivery requires Firebase configuration and real-device testing.
+Only test APKs and public download information are included. No private signing key or Firebase service-account credential is included.
 
-A signature mismatch with an existing installation requires uninstall/reinstall, resetting local login and permissions. Backend accounts and messages remain.
+[Push setup guide](https://github.com/wildb-sketch/patchwire-mvp/blob/main/mobile/PUSH-AND-LINKS.md).
+
+[Previous push preview APK](https://github.com/wildb-sketch/patchwire-mvp/raw/refs/heads/android-test-download-20261117/whassabi-push-debug.apk).
