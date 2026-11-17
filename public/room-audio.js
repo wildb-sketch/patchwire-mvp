@@ -57,25 +57,34 @@
       await p.pc.setLocalDescription(description);
       if (!alive(p)) return;
       p.offerId = `${options.selfId()}:${instance}:${++serial}`;
-      p.offerNeeded = !options.send(p.uid, { s: p.pc.localDescription, offerId: p.offerId });
+      p.offerNeeded = !options.send(p.uid, { s: p.pc.localDescription, offerId: p.offerId, coordinated: options.coordinateOffers !== false });
       // Covers lost SDP, a peer that never answers, and failed initial ICE (not just later failures).
       schedule(p, 8000, () => { if (connected(p.pc) && p.pc.signalingState === 'stable') connectionChanged(p); else recover(p.uid, 'timeout'); });
     } finally { p.makingOffer = false; }
   }
+  function requestOffer(p, restart) {
+    // One endpoint owns offers. Simultaneous ICE restarts must not force Chrome to roll back
+    // an initial ICE gatherer: some WebViews never produce candidates after that rollback.
+    if (options.coordinateOffers !== false && options.selfId() > p.uid && (p.coordinated || p.attempts < 3)) {
+      p.restartPending = true;
+      options.send(p.uid, { negotiate: true, restart });
+      schedule(p, 8000, () => { p.restartPending = false; recover(p.uid, 'timeout'); });
+      return;
+    }
+    p.restartPending = true;
+    enqueue(p, async () => { try { await offer(p, restart); } finally { p.restartPending = false; } });
+  }
   function recover(uid, reason = 'connection', reset = false) {
     const p = peers[uid]; if (!p || !alive(p)) return;
-    if (reset) { p.attempts = 0; p.exhausted = false; }
+    if (reset) { p.attempts = 0; p.exhausted = false; p.restartPending = false; }
     if (p.restartPending || p.exhausted) return;
     if (!p.recovering) { p.recovering = true; report(p, 'reconnecting'); }
     if (!options.signalingReady()) { schedule(p, 1500, () => recover(uid, reason)); return; }
     if (p.attempts >= 3) {
       clearTimer(p); p.exhausted = true; report(p, 'failed'); return;
     }
-    p.attempts++; p.restartPending = true;
-    enqueue(p, async () => {
-      try { await offer(p, true); }
-      finally { p.restartPending = false; }
-    });
+    p.attempts++;
+    requestOffer(p, true);
   }
   function connectionChanged(p) {
     if (!alive(p)) return;
@@ -103,7 +112,7 @@
     pc.ontrack = event => { if (alive(p)) options.onTrack?.(uid, event, p); };
     pc.onconnectionstatechange = () => connectionChanged(p);
     pc.oniceconnectionstatechange = () => connectionChanged(p);
-    if (initiate) enqueue(p, () => offer(p, false));
+    if (initiate) requestOffer(p, false);
     return p;
   }
   const ufrags = description => [...(description?.sdp || '').matchAll(/^a=ice-ufrag:(.+)\r?$/gm)].map(m => m[1].trim());
@@ -119,7 +128,13 @@
     const p = connect(uid);
     return enqueue(p, async () => {
       const pc = p.pc;
+      if (data.negotiate) {
+        if (options.selfId() < uid && pc.signalingState === 'stable' && !p.makingOffer) await offer(p, !!data.restart);
+        return;
+      }
       if (data.s) {
+        if (data.s.type === 'offer') p.restartPending = false;
+        if (data.coordinated) p.coordinated = true;
         const description = data.s;
         if (description.type === 'answer' &&
             (pc.signalingState !== 'have-local-offer' || (data.answerTo && data.answerTo !== p.offerId))) return;
