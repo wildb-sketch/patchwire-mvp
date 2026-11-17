@@ -1,6 +1,7 @@
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { WebSocketServer } = require('ws');
-const turn = require('./lib/turn').createTurnService(process.env);
+const { createTurnService, relayFailure } = require('./lib/turn');
+const turn = createTurnService(process.env);
 const PORT = process.env.PORT || 3000;
 const FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 const VOICE_DIR = process.env.VOICE_DIR || path.join(path.dirname(FILE), 'voice');
@@ -101,7 +102,7 @@ async function api(req, res, url) {
     res.setHeader('Cache-Control', 'no-store');
     if (limited(me.id, 'ice', 30, 60000)) { res.setHeader('Retry-After', '60'); return send(res, 429, { error: 'Please wait before retrying voice.' }); }
     try { return send(res, 200, await turn.ice(me.id)); }
-    catch { res.setHeader('Retry-After', '5'); return send(res, 503, { error: 'Voice relay is temporarily unavailable. Please retry.' }); }
+    catch (error) { res.setHeader('Retry-After', '5'); return send(res, 503, relayFailure(error)); }
   }
   if (route === 'PUT /api/me/photo') {
     const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+\/=]+)$/.exec(String(b.data || ''));

@@ -64,5 +64,7 @@ test('Worker TURN upstream failure returns a sanitized retryable error', async (
  const response = await f.hub.fetch(new Request('https://example.test/api/ice', { headers: { Authorization: 'Bearer auth' } }));
  assert.equal(response.status, 503); assert.equal(response.headers.get('Retry-After'), '5');
  assert.equal(response.headers.get('Cache-Control'), 'no-store');
- assert(!JSON.stringify(await response.json()).includes('master-secret'));
+ const body = await response.json();
+ assert.equal(body.code, 'TURN_NETWORK');
+ assert(!JSON.stringify(body).includes('master-secret'));
 });

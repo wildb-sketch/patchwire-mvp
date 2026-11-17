@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { createTurnService, TurnUnavailable } = require('../lib/turn');
+const { createTurnService, TurnUnavailable, relayFailure } = require('../lib/turn');
 const env = { TURN_KEY_ID: 'test-key', TURN_KEY_API_TOKEN: 'private-api-token' };
 const result = (name = 'temporary') => ({ iceServers: [
   { urls: ['stun:stun.cloudflare.com:3478'] },
@@ -31,7 +31,7 @@ test('existing static providers remain supported with trimmed UDP/TCP/TLS URLs',
 test('Cloudflare receives server-only authentication and returns only usable temporary ICE fields', async () => {
  const service = createTurnService(env, { fetch: async (url, options) => {
   assert.equal(url, 'https://rtc.live.cloudflare.com/v1/turn/keys/test-key/credentials/generate-ice-servers');
-  assert.equal(options.method, 'POST'); assert.equal(options.redirect, 'error');
+  assert.equal(options.method, 'POST'); assert.equal(options.redirect, 'manual');
   assert.equal(options.headers.Authorization, 'Bearer private-api-token');
   assert.deepEqual(JSON.parse(options.body), { ttl: 86400 }); assert(options.signal instanceof AbortSignal);
   return Response.json(result());
@@ -65,7 +65,7 @@ test('upstream errors are sanitized, backed off, then retried without poisoning 
 });
 
 test('malformed, unauthenticated, and STUN-only upstream responses never masquerade as a working relay', async () => {
- const bad = [{}, { iceServers: [] }, { iceServers: [{ urls: 'stun:example.test' }] },
+ const bad = [{}, { iceServers: [] }, { iceServers: [null] }, { iceServers: [{ urls: 'stun:example.test' }] },
   { iceServers: [{ urls: 'turn:example.test', username: 'u' }] },
   { iceServers: [{ urls: 'https://example.test', username: 'u', credential: 'p' }] },
   { iceServers: [{ urls: 'turn:example.test:53', username: 'u', credential: 'p' }] }];
@@ -75,4 +75,23 @@ test('malformed, unauthenticated, and STUN-only upstream responses never masquer
  }
  const service = createTurnService(env, { fetch: async () => new Response('private-api-token', { status: 401 }) });
  await assert.rejects(service.ice('u'), error => error instanceof TurnUnavailable && !error.message.includes('private'));
+});
+
+test('single-server credential responses normalize to the same validated ICE list', async () => {
+ const service = createTurnService(env, { fetch: async () => Response.json({ iceServers: result().iceServers[1] }) });
+ const list = await service.ice('u');
+ assert.equal(list.length, 1); assert.equal(list[0].username, 'temporary'); assert.equal(list[0].urls.length, 3);
+});
+
+test('safe relay diagnostics distinguish provider rejection, timeout, and invalid responses without exposing secrets', async () => {
+ for (const [status, code] of [[401, 'TURN_AUTH'], [403, 'TURN_AUTH'], [404, 'TURN_KEY'], [429, 'TURN_RATE_LIMIT'], [503, 'TURN_UPSTREAM']]) {
+  const service = createTurnService(env, { fetch: async () => new Response('private-api-token sensitive provider details', { status }) });
+  await assert.rejects(service.ice('u'), error => {
+   assert.deepEqual(relayFailure(error), { error: 'Voice relay is temporarily unavailable. Please retry.', code, upstreamStatus: status });
+   return true;
+  });
+ }
+ const timeout = createTurnService(env, { fetch: async () => { const error = Error('private-api-token'); error.name = 'TimeoutError'; throw error; } });
+ await assert.rejects(timeout.ice('u'), error => relayFailure(error).code === 'TURN_TIMEOUT');
+ assert.deepEqual(relayFailure(Error('private-api-token')), { error: 'Voice relay is temporarily unavailable. Please retry.', code: 'TURN_UNAVAILABLE' });
 });
