@@ -36,7 +36,7 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
-    @Override public void onResume() { super.onResume(); PushStore.visible = true; PushPlugin.changed(); }
+    @Override public void onResume() { super.onResume(); PushStore.opened(this); PushPlugin.changed(); }
 
     private void keepRoomWebViewRunning() {
         if (!RoomService.active || getBridge() == null || getBridge().getWebView() == null) return;
@@ -57,6 +57,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override public void onStop() {
+        PushStore.visible = false;
         super.onStop();
         keepRoomWebViewRunning();
     }

@@ -2,11 +2,11 @@ package com.patchwire.app;
 
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
-import android.app.Notification;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Build;
 import androidx.core.app.NotificationManagerCompat;
+import androidx.core.app.NotificationCompat;
 import org.json.JSONObject;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -44,33 +44,58 @@ final class PushStore {
     }
     static synchronized boolean configure(Context c, String origin, String uid, String id, String key, String binding) {
         if (!id.equals(deviceId(c))) return false;
-        cancel(c);
+        SharedPreferences p = prefs(c);
+        // Rechecking a token in the background must not dismiss notifications or reset deduplication.
+        if (!uid.equals(p.getString("uid", "")) || !binding.equals(p.getString("binding", ""))) {
+            cancel(c);
+            p.edit().remove("seen").remove("counts").apply();
+        }
         prefs(c).edit().putString("origin", origin).putString("uid", uid).putString("deviceId", id)
-            .putString("key", key).putString("binding", binding).remove("seen").apply();
+            .putString("key", key).putString("binding", binding).apply();
         return true;
     }
     static synchronized boolean matches(Context c, String uid, String binding) {
         SharedPreferences p = prefs(c);
         return uid != null && !uid.isEmpty() && uid.equals(p.getString("uid", "")) && binding != null && !binding.isEmpty() && binding.equals(p.getString("binding", ""));
     }
-    static synchronized boolean seen(Context c, String id) {
+    private static boolean seen(Context c, String id) {
+        return ("," + prefs(c).getString("seen", "") + ",").contains("," + id + ",");
+    }
+    private static void rememberEvent(Context c, String id) {
         SharedPreferences p = prefs(c);
         String old = p.getString("seen", "");
-        if (("," + old + ",").contains("," + id + ",")) return true;
         String next = old.isEmpty() ? id : old + "," + id;
         String[] values = next.split(",");
         if (values.length > 64) next = next.substring(next.indexOf(',') + 1);
-        p.edit().putString("seen", next).apply(); return false;
+        p.edit().putString("seen", next).apply();
     }
     static synchronized void remember(Context c, String tag) {
         SharedPreferences p = prefs(c);
         Set<String> tags = new HashSet<>(p.getStringSet("tags", new HashSet<>()));
         tags.add(tag); p.edit().putStringSet("tags", tags).apply();
     }
-    static synchronized void post(Context c, String uid, String binding, String tag, Notification notification) {
+    static synchronized void post(Context c, String uid, String binding, String tag, String event, boolean room, NotificationCompat.Builder notification) {
         if (!matches(c, uid, binding) || visible || !enabled(c)) return;
-        try { NotificationManagerCompat.from(c).notify(tag, NOTIFICATION, notification); remember(c, tag); }
+        if (seen(c, event)) return;
+        SharedPreferences p = prefs(c);
+        JSONObject counts;
+        try { counts = new JSONObject(p.getString("counts", "{}")); }
+        catch (Exception ignored) { counts = new JSONObject(); }
+        int count = Math.min(999, counts.optInt(tag, 0) + 1);
+        notification.setNumber(count).setContentText(room ? (count == 1 ? "You have a room invitation" : "You have " + count + " room invitations") :
+            (count == 1 ? "You have a new private message" : "You have " + count + " new private messages"));
+        try {
+            NotificationManagerCompat.from(c).notify(tag, NOTIFICATION, notification.build());
+            remember(c, tag); rememberEvent(c, event);
+            counts.put(tag, count); p.edit().putString("counts", counts.toString()).apply();
+        }
         catch (SecurityException ignored) { /* Permission changes cannot interrupt voice. */ }
+        catch (org.json.JSONException ignored) { /* Posting must never depend on counter persistence. */ }
+    }
+    static synchronized void opened(Context c) {
+        visible = true;
+        cancel(c);
+        prefs(c).edit().remove("counts").apply();
     }
     private static void cancel(Context c) {
         SharedPreferences p = prefs(c);

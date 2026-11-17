@@ -42,6 +42,19 @@ test('deployed Worker routes persist device leases and dispatch authenticated ro
   assert.equal(delivered.data.kind, 'room'); assert.equal(delivered.data.target, room.id);
   assert.equal(delivered.data.recipient, guest.me.id); assert.equal(delivered.data.binding, registration.binding);
   assert.equal(delivered.notification, undefined);
+  assert.equal(delivered.android.collapse_key, undefined);
+  // Reuse the same Hub, FCM sender and authenticated socket across separate message events.
+  for (let i = 1; i <= 3; i++) ws.send(JSON.stringify({ type: 'msg', to: guest.me.id, t: 'Message ' + i }));
+  const sequence = await wait(async () => {
+   const events = await (await provider.fetch('https://provider.test/events')).json();
+   return events.length === 4 && events;
+  });
+  assert.equal(new Set(sequence.map(event => event.data.eventId)).size, 4);
+  for (const event of sequence.slice(1)) {
+   assert.equal(event.data.kind, 'message'); assert.equal(event.data.target, host.me.id);
+   assert.equal(event.data.recipient, guest.me.id); assert.equal(event.data.binding, registration.binding);
+   assert.equal(event.android.collapse_key, undefined);
+  }
   assert.equal((await api('/messages', guest)).status, 200);
   const association = await (await runtime.dispatchFetch('https://fixture.test/.well-known/assetlinks.json')).json();
   assert.equal(association[0].target.package_name, 'com.patchwire.app');
