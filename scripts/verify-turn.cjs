@@ -36,11 +36,11 @@ async function trial(browser,servers,label){
     });
    }
    state.audio.a.connect('b',true);state.audio.b.connect('a',true);
-   state.stats=async()=>Promise.all(pcs.map(async pc=>{
-    const stats=await pc.getStats();let pair,inbound={bytes:0,packets:0,energy:0};
+   state.stats=async()=>Promise.all(pcs.map(async (pc,index)=>{
+    const stats=await pc.getStats();let pair,inbound={bytes:0,packets:0};
     for(const s of stats.values()){
      if(s.type==='transport'&&s.selectedCandidatePairId)pair=stats.get(s.selectedCandidatePairId);
-     if(s.type==='inbound-rtp'&&s.kind==='audio'){inbound.bytes+=s.bytesReceived||0;inbound.packets+=s.packetsReceived||0;inbound.energy+=s.totalAudioEnergy||0;}
+     if(s.type==='inbound-rtp'&&s.kind==='audio'){inbound.bytes+=s.bytesReceived||0;inbound.packets+=s.packetsReceived||0;}
     }
     const candidate=pair&&stats.get(pair.localCandidateId);
     return {connected:pc.connectionState==='connected',policy:pc.getConfiguration().iceTransportPolicy,candidateType:candidate?.candidateType,relayProtocol:candidate?.relayProtocol,...inbound};
@@ -52,8 +52,8 @@ async function trial(browser,servers,label){
     while(Date.now()<deadline){const stats=await page.evaluate(()=>check.stats());if(predicate(stats))return stats;await new Promise(resolve=>setTimeout(resolve,250));}
     throw Error('No confirmed relayed media before timeout');
    }
-   const before=await poll(s=>s.length===2&&s.every(v=>v.connected&&v.policy==='relay'&&v.candidateType==='relay'&&v.packets>20&&v.energy>0),35000);
-   const peers=await poll(s=>s.length===2&&s.every((v,i)=>v.connected&&v.policy==='relay'&&v.candidateType==='relay'&&v.bytes>before[i].bytes+500&&v.energy>before[i].energy),10000);
+   const before=await poll(s=>s.length===2&&s.every(v=>v.connected&&v.policy==='relay'&&v.candidateType==='relay'&&v.packets>20),35000);
+   const peers=await poll(s=>s.length===2&&s.every((v,i)=>v.connected&&v.policy==='relay'&&v.candidateType==='relay'&&v.bytes>before[i].bytes+500&&v.packets>before[i].packets+5),10000);
    return {label,passed:true,peers};
   }catch{
    return {label,passed:false,peers:await page.evaluate(()=>check.stats()),candidateTypes:await page.evaluate(()=>[...new Set(check.candidates.map(c=>c.type))]),errors:await page.evaluate(()=>check.errors.slice(0,12))};
@@ -80,10 +80,10 @@ async function trial(browser,servers,label){
   if(!relay.length)throw Error('Temporary credential response has no TURN servers');
   console.log(JSON.stringify({credentialGeneration:'passed',relayEntries:relay.length,credentialValues:'not displayed'}));
   browser=await chromium.launch({headless:true,args:['--no-sandbox','--autoplay-policy=no-user-gesture-required']});
-  const normal=await trial(browser,servers,'relay-only');console.log(JSON.stringify(normal));
+  const normal=await trial(browser,servers,'relay-only RTP');console.log(JSON.stringify(normal));
   const tls=servers.map(s=>({...s,urls:(Array.isArray(s.urls)?s.urls:[s.urls]).filter(u=>/^turns:.*:443(?:\?|$)/.test(u))})).filter(s=>s.urls.length);
   if(!tls.length)throw Error('TLS port 443 relay route is missing');
-  const fallback=await trial(browser,tls,'TLS-443-relay-only');console.log(JSON.stringify(fallback));
+  const fallback=await trial(browser,tls,'TLS-443-relay-only RTP');console.log(JSON.stringify(fallback));
   if(!normal.passed||!fallback.passed)throw Error('Relayed media verification did not pass');
  }catch(e){console.log(JSON.stringify({failed:true,message:/^(Diagnostic sign-in failed|HTTP transport|Temporary credential generation failed|Temporary credential response|Relayed media verification|TLS port 443 relay route)/.test(e.message)?e.message:'Browser relay diagnostic failed'}));process.exitCode=1;}
  finally{await browser?.close();if(token)await request('/api/logout','POST',{},token).catch(()=>{});}

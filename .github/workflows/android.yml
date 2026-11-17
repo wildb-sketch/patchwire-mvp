@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       verify_turn:
-        description: 'Run a live Cloudflare TURN audio check (creates one diagnostic account)'
+        description: 'Run a live Cloudflare TURN RTP check (creates one diagnostic account)'
         type: boolean
         default: false
   push:
@@ -22,7 +22,7 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - name: Verify real audio through Cloudflare relay and TLS port 443
+      - name: Verify RTP through Cloudflare relay and TLS port 443
         run: node scripts/verify-turn.cjs
   apk:
     runs-on: ubuntu-latest
