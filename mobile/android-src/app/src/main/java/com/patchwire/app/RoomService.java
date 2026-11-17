@@ -17,6 +17,7 @@ import org.json.JSONObject;
 /** Owns the Android foreground lifetime; WebRTC and its microphone track remain in the WebView. */
 public class RoomService extends Service {
     public static final String ACTION_START = "com.patchwire.app.ROOM_START";
+    public static final String ACTION_TRANSPORT_LOST = "com.patchwire.app.ROOM_TRANSPORT_LOST";
     public static final String ACTION_DISMISS = "com.patchwire.app.ROOM_DISMISS";
     public static final String ACTION_STATE = "com.patchwire.app.ROOM_STATE";
     public static final String ACTION_MUTE = "com.patchwire.app.ROOM_MUTE";
@@ -39,6 +40,12 @@ public class RoomService extends Service {
         catch (RuntimeException ignored) { /* Service already stopped: use server disconnect grace. */ }
     }
 
+    static void transportLost(Context context) {
+        if (!active) return;
+        try { context.startService(new Intent(context, RoomService.class).setAction(ACTION_TRANSPORT_LOST)); }
+        catch (RuntimeException ignored) { /* Already stopped. */ }
+    }
+
     private AudioManager audio;
     private NotificationManager notifications;
     private AudioFocusRequest focus;
@@ -48,10 +55,10 @@ public class RoomService extends Service {
     private boolean speaking = false;
     private String title = "Live room";
     private final AudioManager.OnAudioFocusChangeListener focusListener = change -> {
-        // A call or another app taking exclusive focus must never leave an unnoticed open microphone.
-        if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
-            RoomPlugin.command("mute", true);
-        }
+        // Audio focus controls playback arbitration, not the user's microphone choice.
+        // Media apps can take focus without taking microphone ownership. Android itself
+        // enforces microphone privacy/silencing for calls and competing recorders.
+        android.util.Log.i("WhassabiRoom", "Audio focus=" + change + "; microphone intent unchanged");
     };
 
     @Override public IBinder onBind(Intent intent) { return null; }
@@ -72,6 +79,11 @@ public class RoomService extends Service {
         // The WebView cannot recover its transport after process death. Do not resurrect a fake call.
         if (intent == null) { stopSelf(); return START_NOT_STICKY; }
         String action = intent.getAction();
+        if (ACTION_TRANSPORT_LOST.equals(action)) {
+            // A task-removal leave may already be in flight. Do not cancel its native request.
+            if (!dismissing) stopSelf();
+            return START_NOT_STICKY;
+        }
         if (ACTION_DISMISS.equals(action)) { leaveNatively(); return START_NOT_STICKY; }
         if (ACTION_MUTE.equals(action) || ACTION_LEAVE.equals(action)) {
             if (!active || !RoomPlugin.command(ACTION_LEAVE.equals(action) ? "leave" : "mute",

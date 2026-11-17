@@ -217,7 +217,13 @@ public class RoomPlugin extends Plugin {
             current.clear();
             // A replaced Activity must not dismiss the new Activity's room service.
             // The service, not the destroyed WebView, performs the final membership request.
-            RoomService.dismiss(getContext());
+            if (getActivity().isFinishing() && !getActivity().isChangingConfigurations()) {
+                RoomService.dismiss(getContext());
+            } else {
+                // System/configuration destruction is a transport loss, not an intentional Leave.
+                // The WebView is gone, so stop the service and allow normal server seat recovery.
+                RoomService.transportLost(getContext());
+            }
         }
     }
 }

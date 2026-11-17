@@ -5,3 +5,6 @@
 
 /room-audio.js
   Cache-Control: no-cache
+
+/room-heartbeat.js
+  Cache-Control: no-cache
