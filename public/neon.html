@@ -868,7 +868,7 @@ async function loadFriends(notify){try{const prev=S.fr,f=await api('/friends');
 async function boot(me){S.me=me;dropOv();try{S.msgs=await api('/messages')}catch(e){S.msgs=[]}
  await loadUsers();await loadFriends();await loadFollows();await loadIce();connect();clearInterval(tmr);tmr=setInterval(()=>{loadUsers();loadFriends();loadFollows()},20000);S.tab='discover';render()}
 window.addEventListener('scroll',()=>{const x=$('#hd');if(x)x.classList.toggle('on',scrollY>6)},{passive:true});
-window.addEventListener('pagehide',()=>{if(S.room){roomEpoch++;if(R.mic)R.mic.stop();roomCall('dismissRoom').catch(()=>roomCall('stopRoom').catch(()=>{}))}});
+window.addEventListener('pagehide',()=>{clearTimeout(networkTimer);clearTimeout(wsRetryTimer);clearInterval(wsHeartbeat);if(ws){ws.onopen=ws.onmessage=ws.onclose=null;ws.close();ws=null}if(S.room){roomEpoch++;if(R.mic)R.mic.stop();roomCall('dismissRoom').catch(()=>roomCall('stopRoom').catch(()=>{}))}});
 if('serviceWorker' in navigator&&location.protocol!='file:')navigator.serviceWorker.register('/sw.js').catch(()=>{});
 (async()=>{if(S.tok){try{return await boot(await api('/me'))}catch(e){S.tok=null}}S.ov={t:'auth'};paintOv()})();
 </script>
