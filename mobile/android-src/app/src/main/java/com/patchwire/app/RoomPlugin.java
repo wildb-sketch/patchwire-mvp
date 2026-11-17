@@ -96,6 +96,19 @@ public class RoomPlugin extends Plugin {
         else call.reject("Microphone access denied. Allow Microphone in Android Settings > Apps > Whassabi > Permissions.", "MIC_PERMISSION_DENIED");
     }
 
+    @PluginMethod public void prepareNotifications(PluginCall call) {
+        getActivity().runOnUiThread(() -> {
+            PushStore.channel(getContext());
+            if (Build.VERSION.SDK_INT >= 33 && visible() && !notificationAsked && getPermissionState("notifications") == PermissionState.PROMPT) {
+                notificationAsked = true;
+                requestPermissionForAlias("notifications", call, "pushPermissionResult");
+            } else pushPermissionResult(call);
+        });
+    }
+    @PermissionCallback private void pushPermissionResult(PluginCall call) {
+        JSObject result = new JSObject(); result.put("enabled", PushStore.enabled(getContext())); call.resolve(result);
+    }
+
     @PluginMethod public void startRoom(PluginCall call) {
         getActivity().runOnUiThread(() -> startWhenReady(call, 0));
     }

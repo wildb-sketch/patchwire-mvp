@@ -42,3 +42,7 @@ The file is `android/app/build/outputs/apk/debug/app-debug.apk`.
 ## Android voice reliability
 
 See [Android voice validation](ANDROID-VOICE-TESTING.md) for the diagnosis, coordinated APK/web rollout, automated checks, and real-device lock-screen acceptance tests.
+
+## Push notifications and room invite links
+
+See [Push and links setup](PUSH-AND-LINKS.md) for the private Firebase Worker credential, persistent GitHub APK signing, verified HTTPS links and real-phone checks. Native Android push covers direct messages and explicit room invitations.

@@ -2,6 +2,9 @@ const http = require('http'), fs = require('fs'), path = require('path'), crypto
 const { WebSocketServer } = require('ws');
 const { createTurnService, relayFailure } = require('./lib/turn');
 const turn = createTurnService(process.env);
+const { createFcm, createPushRegistry } = require('./lib/push');
+const links = require('./lib/links');
+const pushSender = createFcm(process.env);
 const PORT = process.env.PORT || 3000;
 const FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 const VOICE_DIR = process.env.VOICE_DIR || path.join(path.dirname(FILE), 'voice');
@@ -10,9 +13,15 @@ const KEY = process.env.ANTHROPIC_API_KEY, MODEL = process.env.CLAUDE_MODEL || '
 const LANGS = ['English', 'Turkish', 'Spanish', 'Japanese', 'Korean', 'Portuguese', 'French', 'German'];
 const LV = ['Beginner', 'Intermediate', 'Advanced'];
 
-let D = { users: {}, sessions: {}, msgs: [], reports: [], friends: [], follows: [], feed: [] };
+let D = { users: {}, sessions: {}, msgs: [], reports: [], friends: [], follows: [], feed: [], pushDevices: {} };
 try { D = { ...D, ...JSON.parse(fs.readFileSync(FILE, 'utf8')) }; } catch {}
 let timer; const save = () => { clearTimeout(timer); timer = setTimeout(() => fs.writeFile(FILE, JSON.stringify(D), () => {}), 300); };
+const pushRegistry = createPushRegistry({ devices: D.pushDevices, sender: pushSender, sessionOwner: session => D.sessions[session], put: save, remove: save });
+function deliverMessage(message, kind = 'message', target = message.from) {
+  D.msgs.push(message); save();
+  for (const uid of [message.from, message.to]) sendTo(uid, { type: 'msg', m: message });
+  pushRegistry.notify(message.to, { kind, target, id: message.id }).catch(() => {});
+}
 
 const hash = (pw, salt) => crypto.scryptSync(pw, salt, 32).toString('hex');
 const pub = u => ({ id: u.id, nick: u.nick, nat: u.nat, learn: u.learn, lv: u.lv, bio: u.bio || '', dm: u.dm === 'friends' ? 'friends' : 'everyone', ts: u.ts || 0,
@@ -72,6 +81,11 @@ async function api(req, res, url) {
     if (!u || hash(String(b.password || ''), u.salt) !== u.pw) return send(res, 401, { error: 'Wrong email or password' });
     return send(res, 200, { token: newSession(u.id), me: pub(u) });
   }
+  if (route === 'POST /api/push/refresh') {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!D.pushDevices[b.deviceId] || limited(b.deviceId, 'pushRefresh', 30, 60000) || !pushRegistry.refresh(b)) return send(res, 404, { error: 'Registration expired' });
+    return send(res, 200, {});
+  }
   const tok = (req.headers.authorization || '').replace('Bearer ', ''), me = authUser(tok);
   if (!me) return send(res, 401, { error: 'Please log in' });
   me.ts = Date.now();
@@ -97,7 +111,26 @@ async function api(req, res, url) {
     if (b.dm !== undefined) me.dm = b.dm === 'friends' ? 'friends' : 'everyone';
     save(); return send(res, 200, pub(me));
   }
-  if (route === 'POST /api/logout') { delete D.sessions[tok]; save(); return send(res, 200, {}); }
+  if (route === 'POST /api/logout') { pushRegistry.logout(tok); delete D.sessions[tok]; save(); return send(res, 200, {}); }
+  if (route === 'GET /api/push/status') { res.setHeader('Cache-Control', 'no-store'); return send(res, 200, { configured: pushSender.configured }); }
+  if (route === 'POST /api/push/register') {
+    res.setHeader('Cache-Control', 'no-store');
+    if (limited(me.id, 'pushRegister', 20, 60000)) return send(res, 429, { error: 'Try again shortly' });
+    try { return send(res, 200, pushRegistry.register(me.id, tok, b)); }
+    catch { return send(res, 409, { error: 'Device registration changed. Reopen the app to retry.' }); }
+  }
+  const invitation = /^\/api\/rooms\/([a-f0-9]{8})\/invite$/.exec(url.pathname);
+  if (req.method === 'POST' && invitation) {
+    const room = rooms.get(invitation[1]), to = D.users[clean(b.to, 20)];
+    if (!room || !room.members.has(me.id)) return send(res, 404, { error: 'That room is no longer available' });
+    if (!to || !areFriends(me.id, to.id)) return send(res, 403, { error: 'Invite someone from your friends list' });
+    if (room.audience === 'followers' && room.host !== to.id && !areFriends(room.host, to.id) && !D.follows.some(f => f.a === to.id && f.b === room.host)) return send(res, 403, { error: 'This room is for followers of the host' });
+    if (room.members.has(to.id)) return send(res, 409, { error: 'They are already in this room' });
+    if (limited(me.id, 'roomInvite', 10, 60000)) return send(res, 429, { error: 'Too many invitations. Try again shortly' });
+    const m = { id: crypto.randomBytes(6).toString('hex'), from: me.id, to: to.id, kind: 'room_invite', roomId: room.id,
+      t: `🎙 Join my room “${room.title}” ${process.env.PUBLIC_ORIGIN || 'https://patchwire.whassabi.workers.dev'}/room/${room.id}`, ts: Date.now() };
+    deliverMessage(m, 'room', room.id); return send(res, 200, { m });
+  }
   if (route === 'GET /api/ice') {
     res.setHeader('Cache-Control', 'no-store');
     if (limited(me.id, 'ice', 30, 60000)) { res.setHeader('Retry-After', '60'); return send(res, 429, { error: 'Please wait before retrying voice.' }); }
@@ -125,7 +158,7 @@ async function api(req, res, url) {
     const id = crypto.randomBytes(6).toString('hex'), dur = Math.max(1, Math.min(60, Math.round(Number(b.dur) || 1)));
     try { fs.writeFileSync(path.join(VOICE_DIR, id + '.bin'), buf); } catch { return send(res, 500, { error: 'Could not save the voice message' }); }
     const msg = { id, from: me.id, to, kind: 'voice', dur, mime: m[1].toLowerCase(), t: '🎤 Voice message', ts: Date.now() };
-    D.msgs.push(msg); save(); for (const i of [me.id, to]) sendTo(i, { type: 'msg', m: msg });
+    deliverMessage(msg);
     return send(res, 200, { m: msg });
   }
   if (req.method === 'GET' && url.pathname.startsWith('/api/voice/')) {
@@ -212,18 +245,21 @@ async function api(req, res, url) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try {
+    const redirect = links.roomRedirect(url.pathname);
+    if (redirect) { res.writeHead(302, { Location: redirect, 'Cache-Control': 'no-store' }); return res.end(); }
+    if (url.pathname === '/.well-known/assetlinks.json') { res.setHeader('Cache-Control', 'no-cache'); return send(res, 200, links.assetLinks(process.env.ANDROID_APP_LINK_SHA256)); }
     const pm = /^\/photo\/([0-9a-f]{12})$/.exec(url.pathname);
     if (pm) {
       const u = D.users[pm[1]]; if (!u || !u.photo) { res.writeHead(404); return res.end(); }
       res.writeHead(200, { 'Content-Type': u.photo.type, 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
       return res.end(Buffer.from(u.photo.data, 'base64'));
     }
-    const ST = { '/room-heartbeat.js': ['text/javascript', 'room-heartbeat.js'], '/room-audio.js': ['text/javascript', 'room-audio.js'], '/manifest.webmanifest': ['application/manifest+json', 'manifest.webmanifest'], '/sw.js': ['text/javascript', 'sw.js'], '/icon-192.png': ['image/png', 'icon-192.png'], '/icon-512.png': ['image/png', 'icon-512.png'] };
+    const ST = { '/app-navigation.js': ['text/javascript', 'app-navigation.js'], '/push-client.js': ['text/javascript', 'push-client.js'], '/room-heartbeat.js': ['text/javascript', 'room-heartbeat.js'], '/room-audio.js': ['text/javascript', 'room-audio.js'], '/manifest.webmanifest': ['application/manifest+json', 'manifest.webmanifest'], '/sw.js': ['text/javascript', 'sw.js'], '/icon-192.png': ['image/png', 'icon-192.png'], '/icon-512.png': ['image/png', 'icon-512.png'] };
     if (ST[url.pathname]) {
-      res.writeHead(200, { 'Content-Type': ST[url.pathname][0], 'Cache-Control': ['/sw.js','/room-audio.js','/room-heartbeat.js'].includes(url.pathname) ? 'no-cache' : 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff' });
+      res.writeHead(200, { 'Content-Type': ST[url.pathname][0], 'Cache-Control': ['/sw.js','/room-audio.js','/room-heartbeat.js','/app-navigation.js','/push-client.js'].includes(url.pathname) ? 'no-cache' : 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff' });
       return res.end(fs.readFileSync(path.join(__dirname, 'public', ST[url.pathname][1])));
     }
-    if (url.pathname === '/healthz') { res.writeHead(200, { 'X-Voice-Relay': turn.status, 'X-Voice-Relay-Provider': turn.provider, 'Cache-Control': 'no-store' }); return res.end('ok'); }
+    if (url.pathname === '/healthz') { res.writeHead(200, { 'X-Voice-Relay': turn.status, 'X-Voice-Relay-Provider': turn.provider, 'X-Push': pushSender.configured ? 'configured' : 'missing', 'Cache-Control': 'no-store' }); return res.end('ok'); }
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
     const PG = { '/': 'index.html', '/index.html': 'index.html', '/neon': 'neon.html' };
     if (PG[url.pathname]) {
@@ -263,7 +299,7 @@ const releaseCur = (me, cur, err) => {
   leave(me.id); return true;
 };
 function roomMsg(me, d) {
-  const err = error => sendTo(me.id, { type: 'room:error', error });
+  const err = error => sendTo(me.id, { type: 'room:error', error, ...(d.type === 'room:join' ? { requestRoomId: clean(d.id, 20) } : {}) });
   const cur = rooms.get(roomOf.get(me.id));
   if (d.type === 'room:create') {
     const title = clean(d.title, 40); if (!title) return err('Add a room title');
@@ -342,7 +378,7 @@ function roomMsg(me, d) {
 
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16384 });
 wss.on('connection', (ws, req) => {
-  const me = authUser(new URL(req.url, 'http://x').searchParams.get('token'));
+  const session = new URL(req.url, 'http://x').searchParams.get('token'), me = authUser(session);
   if (!me) return ws.close(4401);
   if (!online.has(me.id)) online.set(me.id, new Set());
   online.get(me.id).add(ws);
@@ -356,6 +392,7 @@ wss.on('connection', (ws, req) => {
   }
   ws.alive = true; ws.on('pong', () => (ws.alive = true));
   ws.on('message', raw => {
+    if (authUser(session)?.id !== me.id) { ws.close(4401, 'unauthorized'); return; }
     let d; try { d = JSON.parse(raw); } catch { return; }
     if (d.type === 'ping') return ws.send(JSON.stringify({ type: 'pong' }));
     if (String(d.type).startsWith('room:')) return roomMsg(me, d);
@@ -365,8 +402,7 @@ wss.on('connection', (ws, req) => {
     if (D.users[d.to].dm === 'friends' && !areFriends(me.id, d.to)) return ws.send(JSON.stringify({ type: 'error', error: 'This person only accepts messages from friends' }));
     if (limited(me.id, 'msg', 20, 10e3)) return ws.send(JSON.stringify({ type: 'error', error: 'Slow down a little' }));
     const m = { id: crypto.randomBytes(6).toString('hex'), from: me.id, to: d.to, t, ts: Date.now() };
-    D.msgs.push(m); save();
-    for (const id of [me.id, d.to]) for (const c of online.get(id) || []) c.send(JSON.stringify({ type: 'msg', m }));
+    deliverMessage(m);
   });
   ws.on('close', () => { const s = online.get(me.id); if (s) { s.delete(ws); if (!s.size) {
         online.delete(me.id); pushFr(...friendIds(me.id));

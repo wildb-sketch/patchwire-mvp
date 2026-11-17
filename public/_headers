@@ -8,3 +8,9 @@
 
 /room-heartbeat.js
   Cache-Control: no-cache
+
+/app-navigation.js
+  Cache-Control: no-cache
+
+/push-client.js
+  Cache-Control: no-cache

@@ -1,0 +1,47 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { spawn } = require('node:child_process');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), net = require('node:net');
+const WebSocket = require('ws');
+
+test('push registration, logout, friend invitations, room privacy and link fallback use authenticated server state', { timeout: 20000 }, async t => {
+ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'whassabi-push-'));
+ const listener = net.createServer(); await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve)); const port = listener.address().port; await new Promise(resolve => listener.close(resolve));
+ const base = `http://127.0.0.1:${port}`;
+ const server = spawn(process.execPath, [path.join(__dirname, '../server.js')], { env: { ...process.env, PORT: String(port), DATA_FILE: path.join(dir, 'data.json'), FCM_SERVICE_ACCOUNT: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+ const sockets = [];
+ t.after(async () => { sockets.forEach(ws => ws.terminate()); server.kill(); await new Promise(resolve => server.exitCode !== null ? resolve() : server.once('exit', resolve)); fs.rmSync(dir, { recursive: true, force: true }); });
+ await new Promise((resolve, reject) => { server.stdout.once('data', resolve); server.once('error', reject); });
+ const api = (route, account, body) => fetch(base + '/api' + route, { method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', ...(account ? { Authorization: 'Bearer ' + account.token } : {}) }, body: body ? JSON.stringify(body) : undefined });
+ const signup = async nick => (await api('/signup', null, { email: nick + '@example.invalid', nick, password: 'fixture-password' })).json();
+ const a = await signup('host'), b = await signup('guest'), c = await signup('outsider');
+ const connect = async account => {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${account.token}`); sockets.push(ws); const queue = [];
+  ws.on('message', raw => queue.push(JSON.parse(raw)));
+  const wait = async predicate => { const until = Date.now() + 5000; while (Date.now() < until) { const found = queue.findIndex(predicate); if (found >= 0) return queue.splice(found, 1)[0]; await new Promise(resolve => setTimeout(resolve, 10)); } throw Error('Expected signaling event missing'); };
+  await wait(d => d.type === 'rooms'); return { ws, wait };
+ };
+ const host = await connect(a), guest = await connect(b);
+ host.ws.send(JSON.stringify({ type: 'room:create', title: 'Friends voice', audience: 'followers' }));
+ const room = (await host.wait(d => d.type === 'room:joined')).room;
+ const deviceId = 'a'.repeat(32), token = 'fixture-fcm-token-' + 'b'.repeat(40);
+ assert.equal((await api('/push/register', null, { deviceId, token })).status, 401);
+ const registrationResponse = await api('/push/register', b, { deviceId, token, uid: a.me.id });
+ assert.equal(registrationResponse.headers.get('Cache-Control'), 'no-store'); const registration = await registrationResponse.json(); assert(registration.deviceKey);
+ assert(!JSON.stringify(registration).includes(token));
+ assert.equal((await api('/push/register', a, { deviceId, token })).status, 409);
+ assert.equal((await api('/push/refresh', null, { ...registration, token: token + '2' })).status, 200);
+ assert.equal((await api('/push/refresh', null, { ...registration, deviceKey: 'wrong', token })).status, 404);
+ assert.equal((await api('/rooms/' + room.id + '/invite', a, { to: b.me.id })).status, 403);
+ await api('/friends/request', a, { id: b.me.id }); await api('/friends/respond', b, { id: a.me.id, accept: true });
+ const invited = await api('/rooms/' + room.id + '/invite', a, { to: b.me.id }); assert.equal(invited.status, 200);
+ const message = (await invited.json()).m; assert.equal(message.kind, 'room_invite'); assert.equal(message.roomId, room.id); assert(message.t.includes('/room/' + room.id));
+ assert.equal((await guest.wait(d => d.type === 'msg' && d.m.id === message.id)).m.to, b.me.id);
+ assert.equal((await api('/rooms/' + room.id + '/invite', c, { to: b.me.id })).status, 404);
+ const redirected = await fetch(base + '/room/' + room.id, { redirect: 'manual' }); assert.equal(redirected.status, 302); assert.equal(redirected.headers.get('Location'), '/neon#room=' + room.id);
+ assert.equal((await fetch(base + '/.well-known/assetlinks.json')).status, 200);
+ await api('/logout', b, {});
+ assert.equal((await api('/push/refresh', null, { ...registration, token })).status, 404);
+ guest.ws.send(JSON.stringify({ type: 'msg', to: a.me.id, t: 'revoked session' }));
+ await new Promise(resolve => guest.ws.once('close', resolve));
+});

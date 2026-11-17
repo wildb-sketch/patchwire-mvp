@@ -29,7 +29,7 @@ function harness(file, { android = true, capture = async () => stream(), native 
   $: () => null, closeModal() {}, dropOv() {}, drop() {}
  });
  const start = html.indexOf("// Capacitor's injected");
- const end = html.indexOf('const bootRoom=', start);
+ const end = html.indexOf('const navigation=', start);
  vm.runInContext(html.slice(start, end), context);
  vm.runInContext(html.match(/^function setMute\(v\).*$/m)[0], context);
  vm.runInContext(html.match(/^let pendingRoomExit=null;\nfunction doLeave.*$/m)[0], context);
