@@ -4,6 +4,16 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 // No relay is used in these loopback fixtures: literal host candidates avoid depending on CI multicast/mDNS.
 let browser;
+// waitForFunction treats a Promise as truthy before its boolean result is known.
+// Await getStats in Node so a false result keeps polling instead of passing the test.
+async function waitForPackets(page, predicate, argument) {
+ const deadline = Date.now() + 10000;
+ while (Date.now() < deadline) {
+  if (await page.evaluate(predicate, argument)) return;
+  await new Promise(resolve => setTimeout(resolve, 100));
+ }
+ assert.fail('Timed out waiting for confirmed received RTP packet flow');
+}
 before(async()=>{ browser=await chromium.launch({headless:true,args:['--no-sandbox','--disable-features=WebRtcHideLocalIpsWithMdns','--autoplay-policy=no-user-gesture-required']}); });
 after(async()=>{ await browser?.close(); });
 async function setup(t) {
@@ -24,7 +34,7 @@ async function setup(t) {
   state.initial=[audio.a.peers.b.pc,audio.b.peers.a.pc];
   state.inbound=async()=>Promise.all([audio.a.peers.b.pc,audio.b.peers.a.pc].map(async pc=>{let bytes=0;for(const s of (await pc.getStats()).values())if(s.type==='inbound-rtp'&&s.kind==='audio')bytes+=s.bytesReceived||0;return bytes}));
  });
- await stable(page);await page.waitForFunction(async()=>{const values=await rtc.inbound();return values.every(n=>n>100)});
+ await stable(page);await waitForPackets(page,async()=>{const values=await rtc.inbound();return values.every(n=>n>100)});
  return page;
 }
 async function stable(page) {
@@ -35,7 +45,7 @@ test('real WebRTC survives simultaneous connection attempts and ICE restarts', {
  const page=await setup(t);
  const before=await page.evaluate(async()=>{rtc.beforeUfrag=rtc.initial[0].localDescription.sdp.match(/a=ice-ufrag:(.+)/)[1];const bytes=await rtc.inbound();rtc.audio.a.recoverAll();rtc.audio.b.recoverAll();return bytes});
  await page.waitForFunction(()=>rtc.initial[0].localDescription.sdp.match(/a=ice-ufrag:(.+)/)[1]!==rtc.beforeUfrag);await stable(page);
- await page.waitForFunction(async before=>(await rtc.inbound()).every((n,i)=>n>before[i]+100),before);
+ await waitForPackets(page,async before=>(await rtc.inbound()).every((n,i)=>n>before[i]+100),before);
  const result=await page.evaluate(()=>({same:[rtc.audio.a.peers.b.pc===rtc.initial[0],rtc.audio.b.peers.a.pc===rtc.initial[1]],tracks:[rtc.initial[0].getSenders().filter(s=>s.track===rtc.tracks.a).length===1,rtc.initial[1].getSenders().filter(s=>s.track===rtc.tracks.b).length===1],errors:rtc.errors}));
  assert.equal(await page.evaluate(()=>Object.values(rtc.audio).every(a=>Object.values(a.peers).every(p=>!p.recovering&&!p.timer))),true);
  assert.deepEqual(result.same,[true,true]);assert.deepEqual(result.tracks,[true,true]);assert.deepEqual(result.errors,[]);
@@ -51,14 +61,14 @@ test('real peers recover after a signaling outage while retaining media objects'
  await page.evaluate(()=>{rtc.ready=false;rtc.audio.a.recoverAll();rtc.audio.b.recoverAll();});
  assert.equal(await page.evaluate(()=>rtc.audio.a.peers.b.attempts+rtc.audio.b.peers.a.attempts),0);
  const before=await page.evaluate(async()=>{const bytes=await rtc.inbound();rtc.ready=true;rtc.audio.a.recoverAll();rtc.audio.b.recoverAll();return bytes});
- await stable(page);await page.waitForFunction(async before=>(await rtc.inbound()).every((n,i)=>n>before[i]+100),before);
+ await stable(page);await waitForPackets(page,async before=>(await rtc.inbound()).every((n,i)=>n>before[i]+100),before);
  assert.deepEqual(await page.evaluate(()=>rtc.errors),[]);
 });
 test('a reopened peer renegotiates against the surviving peer without replacing its sender', {timeout:30000}, async t=>{
  const page=await setup(t);
  const before=await page.evaluate(async()=>{const bytes=await rtc.inbound();rtc.audio.a.remove('b');rtc.audio.a=rtc.make('a');rtc.audio.a.connect('b',true);return bytes[1]});
  await stable(page);
- await page.waitForFunction(async before=>{const bytes=await rtc.inbound();return bytes[0]>100&&bytes[1]>before+100},before);
+ await waitForPackets(page,async before=>{const bytes=await rtc.inbound();return bytes[0]>100&&bytes[1]>before+100},before);
  assert.equal(await page.evaluate(()=>rtc.audio.b.peers.a.pc===rtc.initial[1]&&rtc.initial[1].getSenders().filter(s=>s.track===rtc.tracks.b).length===1),true);
  assert.deepEqual(await page.evaluate(()=>rtc.errors),[]);
 });
