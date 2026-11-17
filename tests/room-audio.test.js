@@ -116,3 +116,12 @@ test('rollback leftovers cannot steal the microphone from the negotiated audio s
  p.pc.getTransceivers=()=>[orphan,active];await f.audio.receive('b',{s:{type:'offer',sdp:'a=ice-ufrag:new\r\n'}});
  assert.equal(active.sender.track,f.track);assert.equal(active.direction,'sendrecv');assert.equal(orphan.sender.track,null);assert.equal(orphan.direction,'inactive');
 });
+
+test('the negotiated SDP MID wins even when rollback left two associated audio senders',async()=>{
+ const f=fixture(),p=f.audio.connect('b');f.track.kind='audio';
+ const orphan={mid:'1',receiver:{track:{kind:'audio'}},sender:{track:f.track,replaceTrack:async t=>{orphan.sender.track=t}}};
+ const active={mid:'0',receiver:{track:{kind:'audio'}},sender:{track:null,replaceTrack:async t=>{active.sender.track=t}}};
+ p.pc.getTransceivers=()=>[orphan,active];
+ await f.audio.receive('b',{s:{type:'offer',sdp:'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\na=sendrecv\r\na=ice-ufrag:new\r\n'}});
+ assert.equal(active.sender.track,f.track);assert.equal(orphan.sender.track,null);assert.equal(orphan.direction,'inactive');assert.equal(f.track.enabled,false);
+});

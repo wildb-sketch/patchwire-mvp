@@ -36,7 +36,7 @@ test('real WebRTC survives simultaneous initial offers and simultaneous ICE rest
  const before=await page.evaluate(async()=>{rtc.beforeUfrag=rtc.initial[0].localDescription.sdp.match(/a=ice-ufrag:(.+)/)[1];const bytes=await rtc.inbound();rtc.audio.a.recoverAll();rtc.audio.b.recoverAll();return bytes});
  await page.waitForFunction(()=>rtc.initial[0].localDescription.sdp.match(/a=ice-ufrag:(.+)/)[1]!==rtc.beforeUfrag);await stable(page);
  await page.waitForFunction(async before=>(await rtc.inbound()).every((n,i)=>n>before[i]+100),before);
- const result=await page.evaluate(()=>({same:[rtc.audio.a.peers.b.pc===rtc.initial[0],rtc.audio.b.peers.a.pc===rtc.initial[1]],tracks:[rtc.initial[0].getSenders()[0].track===rtc.tracks.a,rtc.initial[1].getSenders()[0].track===rtc.tracks.b],errors:rtc.errors}));
+ const result=await page.evaluate(()=>({same:[rtc.audio.a.peers.b.pc===rtc.initial[0],rtc.audio.b.peers.a.pc===rtc.initial[1]],tracks:[rtc.initial[0].getSenders().filter(s=>s.track===rtc.tracks.a).length===1,rtc.initial[1].getSenders().filter(s=>s.track===rtc.tracks.b).length===1],errors:rtc.errors}));
  assert.equal(await page.evaluate(()=>Object.values(rtc.audio).every(a=>Object.values(a.peers).every(p=>!p.recovering&&!p.timer))),true);
  assert.deepEqual(result.same,[true,true]);assert.deepEqual(result.tracks,[true,true]);assert.deepEqual(result.errors,[]);
 });
@@ -44,7 +44,7 @@ test('real ICE recovery preserves a muted microphone without reopening capture',
  const page=await setup(t);
  await page.evaluate(()=>{rtc.tracks.a.enabled=false;rtc.beforeUfrag=rtc.initial[0].localDescription.sdp.match(/a=ice-ufrag:(.+)/)[1];rtc.audio.a.recoverAll();rtc.audio.b.recoverAll();});
  await page.waitForFunction(()=>rtc.initial[0].localDescription.sdp.match(/a=ice-ufrag:(.+)/)[1]!==rtc.beforeUfrag);await stable(page);
- assert.equal(await page.evaluate(()=>rtc.initial[0].getSenders()[0].track===rtc.tracks.a&&!rtc.tracks.a.enabled),true);
+ assert.equal(await page.evaluate(()=>rtc.initial[0].getSenders().filter(s=>s.track===rtc.tracks.a).length===1&&!rtc.tracks.a.enabled),true);
 });
 test('real peers recover after a signaling outage while retaining media objects', {timeout:30000}, async t=>{
  const page=await setup(t);
@@ -59,6 +59,6 @@ test('a reopened peer renegotiates against the surviving peer without replacing 
  const before=await page.evaluate(async()=>{const bytes=await rtc.inbound();rtc.audio.a.remove('b');rtc.audio.a=rtc.make('a');rtc.audio.a.connect('b',true);return bytes[1]});
  await stable(page);
  await page.waitForFunction(async before=>{const bytes=await rtc.inbound();return bytes[0]>100&&bytes[1]>before+100},before);
- assert.equal(await page.evaluate(()=>rtc.audio.b.peers.a.pc===rtc.initial[1]&&rtc.initial[1].getSenders()[0].track===rtc.tracks.b),true);
+ assert.equal(await page.evaluate(()=>rtc.audio.b.peers.a.pc===rtc.initial[1]&&rtc.initial[1].getSenders().filter(s=>s.track===rtc.tracks.b).length===1),true);
  assert.deepEqual(await page.evaluate(()=>rtc.errors),[]);
 });

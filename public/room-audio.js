@@ -19,11 +19,19 @@
   }
   function audioTransceiver(pc) {
     const audio = pc.getTransceivers().filter(t => !t.stopped && t.receiver?.track?.kind === 'audio');
-    // Rollback can leave an unassociated local transceiver before the negotiated one.
+    // Rollback can leave a local sender before the negotiated one, even with a different MID.
+    for (let section of (pc.remoteDescription?.sdp || '').split(/\r?\nm=/)) {
+      if (section.startsWith('m=')) section = section.slice(2);
+      if (!/^audio [1-9]\d* /.test(section) || /^a=inactive\r?$/m.test(section)) continue;
+      const mid = /^a=mid:(.+)$/m.exec(section)?.[1].trim();
+      const negotiated = audio.find(t => t.mid === mid);
+      if (negotiated) return negotiated;
+    }
     return audio.find(t => typeof t.mid === 'string') || audio[0];
   }
   async function attach(p) {
     const sender = audioTransceiver(p.pc)?.sender;
+    for (const t of p.pc.getTransceivers()) if (t.sender !== sender && t.sender?.track?.kind === 'audio') await t.sender.replaceTrack(null);
     if (sender) await sender.replaceTrack(options.getTrack() || null);
   }
   function clearTimer(p) { if (p.timer) cancel(p.timer); p.timer = null; }
