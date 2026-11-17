@@ -46,6 +46,12 @@ test('room links survive design redirect/login and native warm taps preserve a l
  await other.evaluate(() => wsSend({ type: 'room:create', title: 'Destination room' })); await other.waitForFunction(() => S.room && R.mic);
  const destination = await other.evaluate(() => S.room.id);
  await host.waitForFunction(() => S.room.members.length === 2);
+ // A fresh document receives the room list before the server restores its existing seat.
+ // The destination must wait so a restored host still gets the leave/handoff confirmation.
+ const cold = await pageFor(hostAccount);
+ await cold.goto(base + '/neon#room=' + destination); await cold.waitForSelector('#mb [data-c]');
+ assert.equal(await cold.evaluate(() => S.room?.id), original.room);
+ await cold.click('#mb [data-c]'); await cold.context().close();
  const deliver = id => host.evaluate(({ target, id }) => nativeListeners['NavigationPlugin:navigation']({ id, kind: 'room', target }), { target: destination, id });
  await deliver('tap-1'); await host.waitForSelector('#mb [data-c]');
  assert.deepEqual(await host.evaluate(() => ({ room: S.room.id, track: R.mic.id, document: documentIdentity })), original);

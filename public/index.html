@@ -758,7 +758,7 @@ function syncMic(){
 }
 function cleanup(){clearTimeout(networkTimer);roomEpoch++;micFailed=false;S.invAsk=false;if($('#mb [data-ok]'))closeModal();nativeRoom('stop').catch(e=>toast(micError(e)));Object.keys(R.peers).forEach(drop);if(R.mic){R.mic.stop();R.mic=null}if(S.me)delete R.an[S.me.id];S.room=null;S.roomLeaveToken='';S.chat=[];S.react=0;S.muted=false;S.deaf=false;if(S.ov&&S.ov.t=='room'){dropOv()}render()}
 const navigation=window.createAppNavigation({storage:localStorage,origin:location.origin,
- ready:()=>!!S.me&&!!ws&&ws.readyState===1&&booted,uid:()=>S.me?.id,
+ ready:()=>!!S.me&&!!ws&&ws.readyState===1&&booted&&(!S.rooms.some(r=>r.members.some(m=>m.uid===S.me.id))||!!S.room),uid:()=>S.me?.id,
  consumeNative:id=>window.Capacitor.nativePromise('NavigationPlugin','consume',{id}),
  wrongAccount:()=>toast('This notification belongs to another account.'),
  navigate:item=>{if(item.kind==='room')joinRoom(item.target);else if(item.kind==='profile')openProfile(item.target);else openOv('chat',item.target)}
@@ -796,7 +796,7 @@ function connect(){
   if(t=='rooms'){S.rooms=d.rooms;if(pendingRoomExit&&!d.rooms.some(r=>r.id===pendingRoomExit.id&&r.members.some(m=>m.uid===S.me.id)))pendingRoomExit=null;if(S.room&&!d.rooms.some(r=>r.id===S.room.id&&r.members.some(m=>m.uid===S.me.id))){cleanup();toast('Your room has ended or your seat expired')}if(!booted){booted=true}bootRoom();if(S.room){const r=d.rooms.find(x=>x.id==S.room.id);if(r)S.room=r}if(S.ov&&S.ov.t=='all')paintOv();else if(!S.ov)render();return}
   if(t=='room:error')return toast(d.error);
   if(t==='room:left'){if(S.room?.id===d.id)cleanup();return}
-  if(t=='room:joined'){if(pendingRoomExit?.id===d.room.id)return;const same=S.room?.id===d.room.id;if(!same){roomEpoch++;micFailed=false;S.chat=[];S.react=0;S.muted=!!d.room.members.find(m=>m.uid===S.me.id)?.muted}S.roomLeaveToken=d.leaveToken||'';S.room=d.room;d.room.members.filter(m=>m.uid!=S.me.id).forEach(m=>conn(m.uid,true));closeModal();if(!H.sent){H.sent=true;hpush()}setOv({t:'room'});stopMeter();if(d.resumed)toast('Back in the room');syncMic();if(same)audio.recoverAll();wsSend({type:'room:mute',on:S.muted});return}
+  if(t=='room:joined'){if(pendingRoomExit?.id===d.room.id)return;const same=S.room?.id===d.room.id;if(!same){roomEpoch++;micFailed=false;S.chat=[];S.react=0;S.muted=!!d.room.members.find(m=>m.uid===S.me.id)?.muted}S.roomLeaveToken=d.leaveToken||'';S.room=d.room;d.room.members.filter(m=>m.uid!=S.me.id).forEach(m=>conn(m.uid,true));closeModal();if(!H.sent){H.sent=true;hpush()}setOv({t:'room'});stopMeter();if(d.resumed)toast('Back in the room');syncMic();if(same)audio.recoverAll();wsSend({type:'room:mute',on:S.muted});bootRoom();return}
   if(t=='room:state'){if(!S.room||pendingRoomExit?.id===d.room.id)return;S.room=d.room;checkInvite();syncMic();return}
   if(t=='room:declined'){toast(d.nick+' chose not to go on stage');return}
   if(t=='room:peer-left'){drop(d.uid);return}
