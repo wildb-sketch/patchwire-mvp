@@ -66,5 +66,7 @@ In a voice room tap Invite to copy a link like `https://yourapp/room/1a2b3c4d`, 
 Text/voice direct messages and explicit room invitations use Firebase Cloud Messaging. See [push and links setup](mobile/PUSH-AND-LINKS.md) for the private Worker credential, stable APK signing and phone validation. Browser/PWA push is not included.
 
 ## Known MVP limits
-JSON-file storage on the Node backend (Cloudflare uses Durable Object storage), single server instance, no email verification or password reset.
+JSON-file storage on the Node backend (Cloudflare uses Durable Object storage), single server instance. Email recovery and verification require a verified sending domain and backend email credentials.
 Voice rooms are not recorded and have no speaking indicator yet. Moments still shows sample content.
+
+See [account, safety and operations setup](OPERATIONS.md) for email activation, blocking/reporting, private snapshots, recovery checks, monitoring and validation boundaries.

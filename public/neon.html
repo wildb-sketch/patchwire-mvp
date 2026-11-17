@@ -132,8 +132,8 @@ nav b.bg{position:absolute;top:2px;right:2px;min-width:16px;height:16px;border-r
 .bar{display:flex;gap:8px;padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--line);align-items:center;background:#000e}
 .bdg{font:700 10px 'Poppins';letter-spacing:.5px;background:var(--lime);color:#000;padding:2px 7px;border-radius:6px;text-transform:uppercase;display:inline-block}
 .bdg.g{background:var(--s4);color:var(--mute)}
-.tw{position:fixed;left:50%;transform:translateX(-50%);background:var(--lime);color:#000;font:700 14px 'Poppins';padding:11px 18px;border-radius:999px;z-index:99;max-width:90vw;box-shadow:0 6px 24px #000a}
-.tw.go{cursor:pointer;text-decoration:underline}
+.tw{position:fixed;bottom:calc(92px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;width:max-content;max-width:min(360px,calc(100vw - 32px));box-sizing:border-box;background:#25222b;color:#f6f3fa;font:500 13px/1.4 system-ui,sans-serif;padding:10px 10px 10px 14px;border:1px solid #ffffff24;border-radius:14px;z-index:300;box-shadow:0 4px 14px #0005}.room-mini-visible .tw{bottom:calc(160px + env(safe-area-inset-bottom,0px))}.notice-message{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}.notice-close{display:grid;place-items:center;flex:none;width:28px;height:28px;padding:0;background:transparent;color:inherit;border:0;border-radius:50%;cursor:pointer}.notice-close:focus-visible,.tw.go:focus-visible{outline:2px solid var(--lime);outline-offset:2px}.tw.go{cursor:pointer}.tw.go .room-mini-visible .tw{bottom:calc(160px + env(safe-area-inset-bottom,0px))}.notice-message{text-decoration:underline;text-underline-offset:3px}
+
 /* room */
 .rtop{flex:none;padding:12px 16px 0}
 .strip{display:flex;gap:10px;overflow-x:auto;scrollbar-width:none;padding:2px 0 6px;align-items:flex-start}
@@ -263,6 +263,7 @@ nav b.bg{background:#ff3b5c;color:#fff}
 <div id="app"><header class="hd" id="hd"></header><main id="mn"></main><div class="mini" id="mini" hidden></div><nav id="nv"></nav><div class="ov" id="ov" hidden><div id="ob"></div></div><div class="md" id="md" hidden><div id="mb"></div></div></div>
 <script src="/room-audio.js"></script>
 <script src="/room-heartbeat.js"></script>
+<script src="/notices.js"></script>
 <script src="/app-navigation.js"></script>
 <script src="/push-client.js"></script>
 <script>
@@ -275,7 +276,7 @@ const ic=(n,s=20,w=2)=>`<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill
 const TOPICS=['Music','Talk','Culture','Gaming','Lifestyle','Other'];
 const lab=t=>t=='Talk'?'Talk & Debate':t;
 const COVERS=['radial-gradient(circle at 75% 20%,#7c3aed99,transparent 55%),radial-gradient(circle at 15% 80%,#ffd91a33,transparent 50%),linear-gradient(135deg,#1a1033,#07070c)','radial-gradient(circle at 70% 30%,#f9731699,transparent 55%),linear-gradient(135deg,#2a1208,#07070c)','radial-gradient(circle at 30% 30%,#06b6d499,transparent 55%),linear-gradient(135deg,#06232b,#07070c)','radial-gradient(circle at 80% 70%,#ffd91a44,transparent 55%),linear-gradient(135deg,#142108,#07070c)','radial-gradient(circle at 60% 20%,#ec489999,transparent 55%),linear-gradient(135deg,#2a0b1d,#07070c)','radial-gradient(circle at 20% 70%,#3b82f699,transparent 55%),linear-gradient(135deg,#0b1633,#07070c)'];
-const S={tok:null,me:null,users:[],rooms:[],msgs:[],tab:'discover',topic:'Live Now',q:'',room:null,chat:[],react:0,ov:null,deaf:false,muted:false,edit:false,lf:{title:'',desc:'',topic:'Talk',cover:0,aud:'everyone'},ef:null,menu:false,rec:null,read:{},fr:{friends:[],incoming:[],outgoing:[]},fol:{following:[],followers:[]},feed:[],itab:'chats',fq:'',fres:[],unr:false,sq:'',sres:[],micId:null,mics:[],micLabel:''};
+const S={tok:null,me:null,blocks:[],users:[],rooms:[],msgs:[],tab:'discover',topic:'Live Now',q:'',room:null,chat:[],react:0,ov:null,deaf:false,muted:false,edit:false,lf:{title:'',desc:'',topic:'Talk',cover:0,aud:'everyone'},ef:null,menu:false,rec:null,read:{},fr:{friends:[],incoming:[],outgoing:[]},fol:{following:[],followers:[]},feed:[],itab:'chats',fq:'',fres:[],unr:false,sq:'',sres:[],micId:null,mics:[],micLabel:''};
 try{S.tok=localStorage.getItem('pw_tok');S.read=JSON.parse(localStorage.getItem('pw_read')||'{}');S.micId=localStorage.getItem('pw_mic')}catch(e){}
 let ws=null,retry=0,tmr=0,booted=false,ICE=[{urls:'stun:stun.l.google.com:19302'}];
 const hue=s=>[...String(s)].reduce((a,c)=>a*31+c.charCodeAt(0),7)%360;
@@ -283,16 +284,14 @@ const handle=n=>'@'+String(n||'guest').toLowerCase().replace(/\s+/g,'');
 const photoOf=id=>{const u=S.me&&S.me.id==id?S.me:S.users.find(x=>x.id==id);return u&&u.photo&&/^[0-9a-f]{12}$/.test(String(id))?`/photo/${id}?v=${+u.photo}`:null};
 const av=(id,nick,sz=48,cls='')=>{const p=photoOf(id);return `<span class="av ${cls}" data-t="${esc(id)}" style="width:${sz}px;height:${sz}px;font-size:${Math.round(sz*.38)}px;background:${p?`#111 url('${p}') center/cover`:`linear-gradient(135deg,hsl(${255+hue(id)%85},62%,52%),hsl(${255+(hue(id)+30)%85},58%,34%))`}">${p?'':esc((nick||'?')[0].toUpperCase())}</span>`};
 const avb=(id,nick,sz,badge,ring='rg')=>`<span class="avw">${av(id,nick,sz,ring)}${badge=='live'?`<b class="bd gw">${ic('wave',11,2.6)}</b>`:badge=='mic'?`<b class="bd">${ic('mic',9,2.5)}</b>`:badge=='mute'?`<b class="bd mu">${ic('micoff',9,2.5)}</b>`:badge=='clock'?`<b class="bd mu">${ic('clock',9,2.5)}</b>`:''}</span>`;
-const who=id=>S.users.find(u=>u.id==id)||(S.me&&S.me.id==id?S.me:{id,nick:'Guest'});
+const who=id=>S.users.find(u=>u.id==id)||S.blocks.find(u=>u.id==id)||(S.me&&S.me.id==id?S.me:{id,nick:'Guest'});
 const ago=t=>{const m=Math.floor((Date.now()-t)/6e4);return m<1?'now':m<60?m+'m':m<1440?Math.floor(m/60)+'h':Math.floor(m/1440)+'d'};
 const isFr=id=>S.fr.friends.some(x=>x.id==id),isFol=id=>S.fol.following.some(x=>x.id==id);
-function toast(t,go){const d=document.createElement('div');d.className='tw'+(go?' go':'');d.textContent=t;
- d.style.top='calc('+(14+document.querySelectorAll('.tw').length*54)+'px + env(safe-area-inset-top,0px))';
- if(go){d.setAttribute('role','button');d.tabIndex=0;const f=()=>{d.remove();go()};d.onclick=f;d.onkeydown=e=>{if(e.key=='Enter')f()}}
- document.body.append(d);setTimeout(()=>d.remove(),go?5000:2200)}
+const notices=window.createNotices();
+function toast(t,go,settings){notices.show(t,go,settings)}
 async function api(p,method='GET',body){const r=await fetch('/api'+p,{method,headers:{'Content-Type':'application/json',...(S.tok?{Authorization:'Bearer '+S.tok}:{})},body:body?JSON.stringify(body):undefined});
  const j=await r.json().catch(()=>({}));if(!r.ok)throw Object.assign(new Error(j.error||'Request failed'),{status:r.status});return j}
-const wsSend=o=>{if(ws&&ws.readyState==1){ws.send(JSON.stringify(o));return true}toast('Reconnecting… try again');return false};
+const wsSend=o=>{if(ws&&ws.readyState==1){ws.send(JSON.stringify(o));return true}toast('Reconnecting… try again',null,{key:'connection'});return false};
 function keep(fn){const a=document.activeElement,id=a&&a.id,v=a&&a.value,p=a&&a.selectionStart;fn();if(id){const e=document.getElementById(id);if(e){e.value=v;e.focus();try{e.setSelectionRange(p,p)}catch(x){}}}}
 const H={n:0,skip:0,sent:false};
 function hpush(){try{history.pushState({pw:1},'');H.n++}catch(e){}}
@@ -442,12 +441,31 @@ function bindMain(){
  if(g('#lo'))g('#lo').onclick=async()=>{await pushClient.stop();navigation.clear();try{await api('/logout','POST')}catch(e){}try{localStorage.removeItem('pw_tok')}catch(e){}location.reload()};
 }
 function bindMain2(){$('#il').querySelectorAll('[data-chat]').forEach(b=>b.onclick=()=>openOv('chat',b.dataset.chat));$('#il').querySelectorAll('[data-join]').forEach(b=>b.onclick=e=>{e.stopPropagation();joinRoom(b.dataset.join)});const f=$('#fl');if(f)f.onclick=()=>{S.unr=!S.unr;render()}}
+
+async function loadBlocks(){try{S.blocks=await api('/blocks')}catch(e){S.blocks=[]}if(S.ov?.t==='chat')paintOv()}
+async function resetSheet(){
+ try{const status=await api('/account/status');modal(`<h2>Reset password</h2>${status.emailAvailable?'<p class="mute">We’ll email you a link to choose a new password.</p><label class="fi">Email<input class="in" id="reset-email" type="email" autocomplete="email"></label><button class="btn w" id="reset-send">Send reset link</button>':'<p class="mute">Email recovery is not available yet. Please try again later.</p>'}<button class="btn g w" data-x>Close</button>`,b=>{
+ b.querySelector('[data-x]').onclick=closeModal;const input=b.querySelector('#reset-email');if(input)input.value=$('#ae')?.value||S.me?.email||'';
+ const send=b.querySelector('#reset-send');if(send)send.onclick=async()=>{send.disabled=true;try{const result=await api('/account/request-reset','POST',{email:input.value});b.innerHTML=`<h2>Check your inbox</h2><p class="mute">${esc(result.message)}</p><button class="btn g w" data-x>Close</button>`;b.querySelector('[data-x]').onclick=closeModal}catch(e){send.disabled=false;toast(e.message)}};
+ })}catch(e){toast(e.message)}
+}
+function blockedSheet(){modal(`<h2>Blocked people</h2>${S.blocks.length?S.blocks.map(u=>`<div class="row"><span class="sp">${esc(u.nick)}</span><button class="btn sm g" data-unblock="${esc(u.id)}">Unblock</button></div>`).join(''):'<p class="mute">Your blocked list is empty.</p>'}<button class="btn g w" data-x>Close</button>`,b=>{
+ b.querySelector('[data-x]').onclick=closeModal;b.querySelectorAll('[data-unblock]').forEach(button=>button.onclick=async()=>{button.disabled=true;try{await api('/unblock','POST',{id:button.dataset.unblock});await loadBlocks();await loadUsers();blockedSheet()}catch(e){button.disabled=false;toast(e.message)}})
+})}
+function blockSheet(uid){const shared=S.room?.members.some(m=>m.uid===uid);modal(`<h2>Block ${esc(who(uid).nick)}?</h2><p class="mute">They won’t be able to message or invite you, and you won’t share rooms.${shared?(S.room.host===S.me.id?' They will be removed from your room.':' You will leave the current room.') : ''}</p><button class="btn rd w" id="confirm-block">Block</button><button class="btn g w" data-x>Cancel</button>`,b=>{
+ b.querySelector('[data-x]').onclick=closeModal;b.querySelector('#confirm-block').onclick=async()=>{const button=b.querySelector('#confirm-block');button.disabled=true;try{await api('/block','POST',{id:uid});if(button.isConnected)closeModal();if(S.rec?.to===uid)stopRec(false);await loadBlocks();await loadFriends();await loadFollows();await loadUsers();toast('User blocked')}catch(e){button.disabled=false;toast(e.message)}}
+})}
+function reportSheet(uid){modal(`<h2>Report ${esc(who(uid).nick)}</h2><label class="fi">Reason<select class="in" id="report-reason"><option value="spam">Spam</option><option value="harassment">Harassment</option><option value="hate">Hate or threats</option><option value="impersonation">Impersonation</option><option value="other">Other</option></select></label><label class="fi">Details (optional)<textarea class="in" id="report-details" maxlength="1000" rows="3"></textarea></label><button class="btn w" id="report-send">Submit report</button><button class="btn g w" data-x>Cancel</button>`,b=>{
+ b.querySelector('[data-x]').onclick=closeModal;b.querySelector('#report-send').onclick=async()=>{const button=b.querySelector('#report-send');button.disabled=true;try{await api('/report','POST',{id:uid,reason:b.querySelector('#report-reason').value,details:b.querySelector('#report-details').value});if(button.isConnected)closeModal();toast('Report submitted')}catch(e){button.disabled=false;toast(e.message)}}
+})}
+function removeFromRoom(uid){modal(`<h2>Remove ${esc(who(uid).nick)}?</h2><p class="mute">They won’t be able to rejoin this room.</p><button class="btn rd w" id="confirm-remove">Remove from room</button><button class="btn g w" data-x>Cancel</button>`,b=>{b.querySelector('[data-x]').onclick=closeModal;b.querySelector('#confirm-remove').onclick=()=>{wsSend({type:'room:kick',uid});closeModal()}})}
+
 function privSheet(){
- modal(`<h2>Privacy & Safety</h2><p class="mute">Who can send you messages</p><div class="seg" style="margin:0"><button data-dm="everyone" aria-pressed="${(S.me.dm||'everyone')=='everyone'}">Everyone</button><button data-dm="friends" aria-pressed="${S.me.dm=='friends'}">Friends only</button></div><button class="btn g w" data-x>Done</button>`,b=>{
-  b.querySelector('[data-x]').onclick=closeModal;
+ modal(`<h2>Privacy & Safety</h2><p class="mute">Who can send you messages</p><div class="seg" style="margin:0"><button data-dm="everyone" aria-pressed="${(S.me.dm||'everyone')=='everyone'}">Everyone</button><button data-dm="friends" aria-pressed="${S.me.dm=='friends'}">Friends only</button></div><button class="btn g w" id="verify-email" ${S.me.emailVerified?'disabled':''}>${S.me.emailVerified?'Email verified ✓':'Verify email address'}</button><button class="btn g w" id="blocked-people">Blocked people (${S.blocks.length})</button><button class="btn g w" data-x>Done</button>`,b=>{
+  b.querySelector('[data-x]').onclick=closeModal;b.querySelector('#blocked-people').onclick=blockedSheet;b.querySelector('#verify-email').onclick=async()=>{try{const result=await api('/account/request-verification','POST');toast(result.message||'Email already verified')}catch(e){toast(e.message)}};
   b.querySelectorAll('[data-dm]').forEach(x=>x.onclick=async()=>{try{S.me=await api('/me','PUT',{dm:x.dataset.dm});toast(S.me.dm=='friends'?'Only friends can message you':'Anyone can message you');privSheet();render()}catch(e){toast(e.message)}})})}
 function mini(){
- const e=$('#mini'),show=!!S.room&&!(S.ov&&S.ov.t=='room');e.hidden=!show;if(!show){e.innerHTML='';return}
+ const e=$('#mini'),show=!!S.room&&!(S.ov&&S.ov.t=='room');e.hidden=!show;document.body.classList.toggle('room-mini-visible',show);if(!show){e.innerHTML='';return}
  const sp=iSpeak();
  e.innerHTML=`<button class="ic" id="mo" aria-label="Open room">${ic('wave',18)}</button><button class="t" id="mt"><small>TUNED IN<i></i></small><span>${esc(S.room.title)} • Live Broadcast</span></button>${sp?`<button class="mb2 ${S.muted?'off':''}" id="mm" aria-label="${S.muted?'Unmute microphone':'Mute microphone'}" aria-pressed="${S.muted}">${ic(S.muted?'micoff':'mic',17)}</button>`:''}<button class="mb2 ${S.deaf?'off':''}" id="msd" aria-label="${S.deaf?'Unmute sound':'Mute sound'}" aria-pressed="${S.deaf}">${ic(S.deaf?'voloff':'vol',17)}</button><button class="mb2 x" id="mx" aria-label="Leave room">${ic('x',15)}</button>`;
  $('#mo').onclick=$('#mt').onclick=()=>openOv('room');
@@ -517,7 +535,8 @@ function bubble(x){const me=x.from==S.me.id;
  if(x.kind=='voice'){const bars=[...String(x.id)].slice(0,24).map(c=>4+(c.charCodeAt(0)*7%16)).map(v=>`<i style="height:${v}px"></i>`).join('');
   return `<div class="m vm ${me?'me':''}" data-vm="${esc(x.id)}"><button class="vp" data-v="${esc(x.id)}" aria-label="Play voice message">${ic('play',16)}</button><span class="vw">${bars}</span><span class="vd">${fmt(x.dur||0)}</span></div>`}
  const mm=/(https?:\/\/\S*(?:#room=|\/room\/)([0-9a-f]{8}))/.exec(String(x.t));
- if(mm)return `<div class="m ${me?'me':''}">${esc(String(x.t).replace(mm[1],'').trim())}<br><button class="btn sm ${me?'g':''}" data-jr="${mm[2]}" style="margin-top:8px">${ic('hp',13)}Join room</button></div>`;
+ let localInvite=false;if(mm){try{localInvite=new URL(mm[1]).origin===location.origin}catch(e){}}
+ if(mm&&(localInvite||x.kind==='room_invite'&&x.roomId===mm[2]))return `<div class="m ${me?'me':''}">${esc(String(x.t).replace(mm[1],'').trim())}<br><button class="btn sm ${me?'g':''}" data-jr="${mm[2]}" style="margin-top:8px">${ic('hp',13)}Join room</button></div>`;
  return `<div class="m ${me?'me':''}">${esc(x.t)}</div>`}
 let VA=null;const VC={};
 async function playVoice(id,btn){
@@ -544,10 +563,10 @@ async function startRec(){
  catch(e){toast(micError(e))}}
 function stopRec(send){const r=S.rec;if(!r)return;r.send=send;try{r.mr.stop()}catch(e){S.rec=null}}
 function pChat(){
- const id=S.ov.id,u=who(id),h=S.msgs.filter(x=>x.from==id||x.to==id),can=isFr(id)||(u.dm||'everyone')!='friends',req=S.fr.outgoing.some(x=>x.id==id),lv=hostRoom(id);
+ const id=S.ov.id,u=who(id),h=S.msgs.filter(x=>x.from==id||x.to==id),blocked=S.blocks.some(x=>x.id===id),can=!blocked&&(isFr(id)||(u.dm||'everyone')!='friends'),req=S.fr.outgoing.some(x=>x.id==id),lv=hostRoom(id);
  const bar=S.rec?`<div class="bar"><button class="ib2 sq" id="rc" aria-label="Cancel recording">${ic('x',16)}</button><span class="sp row" style="gap:8px"><i class="dt" style="background:var(--red)"></i><b class="gr" id="rt">${fmt((Date.now()-S.rec.t0)/1e3)}</b><span class="mute s">Recording…</span></span><button class="btn sm" id="rs" aria-label="Send voice message">${ic('send',16)}</button></div>`
  :can?`<div class="bar"><button class="ib2 sq" id="vm" aria-label="Record a voice message" style="color:var(--lime)">${ic('mic',17)}</button><input class="in pill" id="ci" placeholder="Message ${esc(u.nick)}…" aria-label="Message" maxlength="500" style="flex:1"><button class="btn sm" id="sd" aria-label="Send">${ic('send',16)}</button></div>`
- :`<div class="bar"><span class="mute s sp">${esc(u.nick)} only accepts messages from friends.</span>${req?'<span class="bdg g">Requested</span>':'<button class="btn sm" id="af">Add friend</button>'}</div>`;
+ :blocked?'<div class="bar"><span class="mute s">Unblock this person to send messages.</span></div>':`<div class="bar"><span class="mute s sp">${esc(u.nick)} only accepts messages from friends.</span>${req?'<span class="bdg g">Requested</span>':'<button class="btn sm" id="af">Add friend</button>'}</div>`;
  $('#ob').innerHTML=`<div class="ph"><button class="ib2" id="bk" aria-label="Back">${ic('cl',22)}</button><button class="row sp" data-prof="${esc(id)}">${avb(u.id,u.nick,38,lv?'live':'',lv?'rg':'rg2')}<span class="sp"><span class="gr tr" style="display:block;font-weight:700;font-size:16px">${esc(u.nick)}</span><span class="mute s">${esc(handle(u.nick))}</span></span></button>${lv?`<button class="btn sm" data-join="${esc(lv.id)}">Join Stage</button>`:''}</div><div class="ob" id="ms"><div class="msgs">${h.length?h.map(bubble).join(''):'<p class="mute c">Say hi 👋</p>'}</div></div>${bar}`;
  $('#bk').onclick=closeOv;$('#ms').scrollTop=1e6;
  $('#ob').querySelectorAll('[data-prof]').forEach(b=>b.onclick=()=>openProfile(b.dataset.prof));
@@ -622,19 +641,19 @@ function pRoom(){
  cl.scrollTop=near?cl.scrollHeight:st;
 }
 async function openProfile(uid){
- let u=S.users.find(x=>x.id==uid);if(!u){await loadUsers();u=S.users.find(x=>x.id==uid)}
+ let u=uid===S.me.id?S.me:S.users.find(x=>x.id==uid)||S.blocks.find(x=>x.id==uid);if(!u){await loadUsers();u=S.users.find(x=>x.id==uid)}
  const r=S.room,host=!!r&&r.host==S.me.id,m=r&&r.members.find(x=>x.uid==uid);
  if(!u)u={id:uid,nick:(m&&m.nick)||'Guest',bio:''};
  const self=uid==S.me.id,f=S.fr,rel=f.friends.some(x=>x.id==uid)?'f':f.incoming.some(x=>x.id==uid)?'in':f.outgoing.some(x=>x.id==uid)?'out':'n';
- const can=rel=='f'||(u.dm||'everyone')!='friends',fol=isFol(uid),lv=hostRoom(uid);
- const acts=self?'<p class="mute s c">This is you.</p>':
+ const blocked=S.blocks.some(x=>x.id===uid),can=!blocked&&(rel=='f'||(u.dm||'everyone')!='friends'),fol=isFol(uid),lv=hostRoom(uid);
+ const acts=self?'<p class="mute s c">This is you.</p>':blocked?'<p class="mute s c">You blocked this person.</p><button class="btn g w" data-unblock>Unblock</button>':
   `<div class="row"><button class="btn ${fol?'g':''} sp" data-fol>${fol?'Following':'Follow'}</button>${rel=='f'?'<span class="bdg g sp" style="text-align:center;padding:10px">✓ Friends</span>':rel=='in'?'<button class="btn sp" data-fa="1">Accept</button><button class="btn g sp" data-fa="0">Deny</button>':rel=='out'?'<button class="btn g sp" data-cancel>Requested ✕</button>':'<button class="btn g sp" data-add>Add friend</button>'}</div>`
   +(can?'<button class="btn g w" data-msg>Message</button>':'<p class="mute s c">Only accepts messages from friends.</p>')
   +(lv&&(!r||r.id!=lv.id)?`<button class="btn w" data-live>${ic('hp',14)}Join their live room</button>`:'')
-  +(host&&m?`<button class="btn g w" data-role>${m.role=='speaker'?'Move to audience':m.invited?'Cancel invite':m.hand?'Accept request':'Invite to speak'}</button>`:'');
- modal(`<div style="text-align:center">${av(u.id,u.nick,88,'rg')}<div class="gr" style="font:700 22px 'Poppins';margin-top:10px">${esc(u.nick)}</div><div class="lime s">${esc(handle(u.nick))}${m?' · '+(uid==r.host?'Host':m.role=='speaker'?'Co-host':'Listener'):''}</div><p style="margin:10px 0 8px;color:#c9c9d1">${esc(u.bio||'No bio yet.')}</p><div class="stat" style="margin:0"><div><b>${u.followers||0}</b><span>FOLLOWERS</span></div><div><b>${u.following||0}</b><span>FOLLOWING</span></div><div><b>${u.hosted||0}</b><span>BROADCASTS</span></div></div></div>${acts}<button class="btn g w" data-x>Close</button>`,b=>{
+  +(host&&m?`<button class="btn g w" data-role>${m.role=='speaker'?'Move to audience':m.invited?'Cancel invite':m.hand?'Accept request':'Invite to speak'}</button><button class="btn rd w" data-kick>Remove from room</button>`:'');
+ modal(`<div style="text-align:center">${av(u.id,u.nick,88,'rg')}<div class="gr" style="font:700 22px 'Poppins';margin-top:10px">${esc(u.nick)}</div><div class="lime s">${esc(handle(u.nick))}${m?' · '+(uid==r.host?'Host':m.role=='speaker'?'Co-host':'Listener'):''}</div><p style="margin:10px 0 8px;color:#c9c9d1">${esc(u.bio||'No bio yet.')}</p><div class="stat" style="margin:0"><div><b>${u.followers||0}</b><span>FOLLOWERS</span></div><div><b>${u.following||0}</b><span>FOLLOWING</span></div><div><b>${u.hosted||0}</b><span>BROADCASTS</span></div></div></div>${acts}${self?'':`<button class="btn g w" data-report>Report</button>${blocked?'':'<button class="btn g w" data-block>Block</button>'}`}<button class="btn g w" data-x>Close</button>`,b=>{
   const q=s=>b.querySelector(s),on=(s,fn)=>{const e=q(s);if(e)e.onclick=fn};
-  on('[data-x]',closeModal);
+  on('[data-x]',closeModal);on('[data-block]',()=>blockSheet(uid));on('[data-report]',()=>reportSheet(uid));on('[data-kick]',()=>removeFromRoom(uid));on('[data-unblock]',async()=>{try{await api('/unblock','POST',{id:uid});await loadBlocks();await loadUsers();openProfile(uid)}catch(e){toast(e.message)}});
   on('[data-fol]',async()=>{try{await api(fol?'/unfollow':'/follow','POST',{id:uid});await loadFollows();await loadUsers();openProfile(uid)}catch(e){toast(e.message)}});
   on('[data-add]',async()=>{await frCall('/friends/request',{id:uid},x=>x.status=='accepted'?'You’re now friends':'Friend request sent');openProfile(uid)});
   b.querySelectorAll('[data-fa]').forEach(x=>x.onclick=async()=>{await frCall('/friends/respond',{id:uid,accept:x.dataset.fa=='1'},()=>x.dataset.fa=='1'?'Friend added':'Request denied');openProfile(uid)});
@@ -649,7 +668,8 @@ function pAuth(){
  $('#ob').innerHTML=`<div class="ob" style="padding:28px 22px;background:linear-gradient(#12062a00 40%,#12062a 330px),url(${CLOUD}) center top/cover no-repeat"><div class="c"><img src="${MASCOT}" alt="" width="150"></div><h1 class="gr c" style="font:700 34px 'Poppins';letter-spacing:-.8px">Patchwire</h1><p class="mute c" style="margin:4px 0 20px">Live radio rooms, real people, great vibes.</p>
  <label class="fi">Email<input class="in" id="ae" type="email" autocomplete="email"></label><label class="fi">Password${up?' (8+ characters)':''}<input class="in" id="ap" type="password" autocomplete="${up?'new-password':'current-password'}"></label>
  ${up?'<label class="fi">Username<input class="in" id="an" maxlength="20"></label>':''}
- <button class="btn w" id="ag" style="padding:16px">${up?'Create account':'Log in'}</button><button class="btn g w" id="as" style="margin-top:10px">${up?'I already have an account':'Create a new account'}</button></div>`;
+ <button class="btn w" id="ag" style="padding:16px">${up?'Create account':'Log in'}</button>${up?'':'<button class="btn g w" id="af">Forgot password?</button>'}<button class="btn g w" id="as" style="margin-top:10px">${up?'I already have an account':'Create a new account'}</button></div>`;
+ if($('#af'))$('#af').onclick=resetSheet;
  $('#as').onclick=()=>{S.am=up?'in':'up';pAuth()};
  $('#ag').onclick=async()=>{try{const r=await api(up?'/signup':'/login','POST',{email:$('#ae').value,password:$('#ap').value,...(up?{nick:$('#an').value}:{})});
   S.tok=r.token;try{localStorage.setItem('pw_tok',r.token)}catch(e){}await boot(r.me)}catch(e){toast(e.message)}};
@@ -705,6 +725,7 @@ setInterval(()=>{for(const u in R.an){const{a,b}=R.an[u];a.getByteTimeDomainData
  document.querySelectorAll('.eqb[data-t="'+u+'"]').forEach(e=>e.classList.toggle('on',on));
  document.querySelectorAll('.av[data-t="'+u+'"]').forEach(e=>{e.style.filter=on?'drop-shadow(0 0 8px #ffd91a)':''})}},150);
 const iSpeak=()=>!!S.room&&S.room.members.some(m=>m.uid==S.me.id&&m.role=='speaker');
+const failedAudioPeers=new Set();
 const audio=window.createRoomAudio({
  selfId:()=>S.me.id,isMember:u=>!!S.room&&S.room.members.some(m=>m.uid===u),
  getIce:()=>ICE,refreshIce:()=>loadIce(),getTrack:()=>R.mic&&iSpeak()?R.mic:null,
@@ -712,14 +733,15 @@ const audio=window.createRoomAudio({
  send:(to,data)=>{if(!ws||ws.readyState!==1)return false;ws.send(JSON.stringify({type:'room:signal',to,data}));return true},
  onTrack:(u,e,p)=>{if(!p.audio){p.audio=document.createElement('audio');p.audio.autoplay=true;p.audio.muted=S.deaf;document.body.append(p.audio)}p.audio.srcObject=e.streams[0]||new MediaStream([e.track]);p.audio.play().catch(()=>{});watch(u,new MediaStream([e.track]))},
  onRemove:u=>{delete R.an[u]},
- onStatus:(u,state)=>{const member=S.room?.members.find(m=>m.uid===u);if(!member)return;const name=handle(member.nick);
-  if(state==='reconnecting')toast('Reconnecting audio with '+name+'…');
-  if(state==='failed')toast('Audio with '+name+' could not reconnect. Tap to retry.',()=>audio.retry(u));
+ onStatus:(u,state)=>{if(!S.room?.members.some(m=>m.uid===u))return;
+  if(state==='recovered')failedAudioPeers.delete(u);
+  if(state==='reconnecting')toast('Reconnecting room audio…',null,{key:'connection'});
+  if(state==='failed'){failedAudioPeers.add(u);toast('Some room audio could not reconnect. Tap to retry.',()=>{const peers=[...failedAudioPeers];failedAudioPeers.clear();peers.forEach(uid=>audio.retry(uid))},{key:'audio-retry'})}
  },
  onError:(u,e)=>console.debug('Room audio recovery',u,e.name||'connection error')
 });
 R.peers=audio.peers;
-const drop=u=>audio.remove(u);
+const drop=u=>{failedAudioPeers.delete(u);audio.remove(u)};
 const conn=(u,off)=>audio.connect(u,off);
 const onSignal=(from,data)=>audio.receive(from,data);
 let iceRequest=null,iceLoadedAt=0;
@@ -855,12 +877,14 @@ function connect(){
  ws.onopen=()=>{if(ws!==socket)return;retry=0;if(pendingRoomExit)wsSend(pendingRoomExit.command);roomHeartbeat.start(socket)};
  ws.onmessage=e=>{if(ws!==socket)return;roomHeartbeat.message(socket);const d=JSON.parse(e.data),t=d.type;if(t==='pong')return;
   if(t=='error')return toast(d.error);
+  if(t==='safety:changed'){Promise.all([loadBlocks(),loadFriends(),loadFollows(),loadUsers()]).then(()=>{if(S.ov?.t==='chat')paintOv()});return}
+  if(t==='room:removed'){if(S.room?.id===d.id){cleanup();toast(d.reason||'You left the room.')}return}
   if(t=='friends'){loadFriends(true);return}
   if(t=='follows'){loadFollows(true);return}
   if(t=='msg'){if(S.msgs.some(m=>m.id==d.m.id))return;S.msgs.push(d.m);
    const peer=d.m.from==S.me.id?d.m.to:d.m.from,open=S.ov&&S.ov.t=='chat'&&S.ov.id==peer;
    if(open){S.read[peer]=Date.now();saveRead();paintOv()}
-   else if(d.m.from!=S.me.id){toast(who(d.m.from).nick+': '+String(d.m.t).slice(0,40),()=>openOv('chat',peer));if(!S.users.some(u=>u.id==d.m.from))loadUsers()}
+   else if(d.m.from!=S.me.id){toast(who(d.m.from).nick+': '+String(d.m.t).slice(0,40),()=>openOv('chat',peer),{key:'message:'+peer});if(!S.users.some(u=>u.id==d.m.from))loadUsers()}
    if(!S.ov||S.ov.t!='chat')render();return}
   if(t=='rooms'){S.rooms=d.rooms;if(pendingRoomExit&&!d.rooms.some(r=>r.id===pendingRoomExit.id&&r.members.some(m=>m.uid===S.me.id)))pendingRoomExit=null;if(S.room&&!d.rooms.some(r=>r.id===S.room.id&&r.members.some(m=>m.uid===S.me.id))){cleanup();toast('Your room has ended or your seat expired')}if(!booted){booted=true}bootRoom();if(S.room){const r=d.rooms.find(x=>x.id==S.room.id);if(r)S.room=r}if(S.ov&&S.ov.t=='all')paintOv();else if(!S.ov)render();return}
   if(t=='room:error')return toast(d.error);
@@ -872,7 +896,7 @@ function connect(){
   if(t=='room:ended'){if(S.room){cleanup();toast('The host ended the room')}return}
   if(t=='room:chat'){S.chat.push(d);if(S.chat.length>100)S.chat.shift();if(['👏','🔥','❤️'].includes(d.t))S.react++;addChat(d);return}
   if(t=='room:signal')onSignal(d.from,d.data)};
- ws.onclose=e=>{if(ws!==socket)return;roomHeartbeat.stop();if(S.room)toast('Reconnecting to your room…');if(e.code==4401){try{localStorage.removeItem('pw_tok')}catch(x){}return location.reload()}wsRetryTimer=setTimeout(connect,Math.min(8000,1000*++retry))};
+ ws.onclose=e=>{if(ws!==socket)return;roomHeartbeat.stop();if(S.room)toast('Reconnecting to your room…',null,{key:'connection'});if(e.code==4401){try{localStorage.removeItem('pw_tok')}catch(x){}return location.reload()}wsRetryTimer=setTimeout(connect,Math.min(8000,1000*++retry))};
 }
 async function loadUsers(){try{S.users=await api('/users');if(!S.ov)render()}catch(e){}}
 async function loadFeed(){try{S.feed=await api('/feed');if(S.tab=='feed'&&!S.ov)render()}catch(e){}}
@@ -886,7 +910,7 @@ async function loadFriends(notify){try{const prev=S.fr,f=await api('/friends');
  S.fr=f;f.friends.concat(f.incoming,f.outgoing).forEach(u=>{if(!S.users.some(x=>x.id==u.id))S.users.push(u)});
  if(S.ov&&S.ov.t=='chat')paintOv();else if(S.ov&&(S.ov.t=='notif'||S.ov.t=='search'))paintOv();else if(!S.ov)keep(render)}catch(e){}}
 async function boot(me){S.me=me;dropOv();try{S.msgs=await api('/messages')}catch(e){S.msgs=[]}
- await loadUsers();await loadFriends();await loadFollows();await loadIce();connect();pushClient.start();clearInterval(tmr);tmr=setInterval(()=>{loadUsers();loadFriends();loadFollows()},20000);S.tab='discover';render()}
+ await loadBlocks();await loadUsers();await loadFriends();await loadFollows();await loadIce();connect();pushClient.start();clearInterval(tmr);tmr=setInterval(()=>{loadUsers();loadFriends();loadFollows()},20000);S.tab='discover';render()}
 window.addEventListener('scroll',()=>{const x=$('#hd');if(x)x.classList.toggle('on',scrollY>6)},{passive:true});
 window.addEventListener('pagehide',()=>{clearTimeout(networkTimer);clearTimeout(wsRetryTimer);roomHeartbeat.stop();if(ws){ws.onopen=ws.onmessage=ws.onclose=null;ws.close();ws=null}if(S.room){roomEpoch++;if(R.mic)R.mic.stop();roomCall('dismissRoom').catch(()=>roomCall('stopRoom').catch(()=>{}))}});
 if('serviceWorker' in navigator&&location.protocol!='file:')navigator.serviceWorker.register('/sw.js').catch(()=>{});

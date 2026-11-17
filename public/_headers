@@ -14,3 +14,18 @@
 
 /push-client.js
   Cache-Control: no-cache
+
+/notices.js
+  Cache-Control: no-cache
+
+/account.html
+  Cache-Control: no-store
+  Referrer-Policy: no-referrer
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'
+
+/ops.html
+  Cache-Control: no-store
+  Referrer-Policy: no-referrer
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'

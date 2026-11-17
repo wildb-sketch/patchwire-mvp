@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Whassabi account</title>
+<style>body{margin:0;min-height:100dvh;display:grid;place-items:center;background:#10091c;color:#f6f3ff;font:16px system-ui,sans-serif}main{box-sizing:border-box;width:min(420px,calc(100% - 32px));padding:28px;border:1px solid #473452;border-radius:22px;background:#1d1329}h1{font-size:25px;margin:12px 0}p{line-height:1.5;color:#d6cadd}label{display:block;margin-top:18px}input,button{box-sizing:border-box;width:100%;font:inherit;padding:13px;border-radius:12px;margin-top:8px}input{background:#10091c;color:inherit;border:1px solid #69547c}button{cursor:pointer;background:#d4ff63;color:#162000;border:0;font-weight:700;margin-top:20px}button:disabled{opacity:.6;cursor:wait}a{color:#d4ff63}small{letter-spacing:2px;color:#d4ff63}#status:empty{display:none}</style></head>
+<body><main><small>WHASSABI</small><h1 id="title">Account link</h1><p id="description">Checking your link…</p><form id="form" hidden><label id="password-label">New password<input id="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></label><button id="submit">Continue</button></form><p id="status" role="status" aria-live="polite"></p><p><a href="/neon">Open Whassabi</a></p></main>
+<script>
+const match=/^#(reset|verify)=([A-Za-z0-9_-]{43})$/.exec(location.hash);
+history.replaceState(null,'',location.pathname);
+const title=document.getElementById('title'),description=document.getElementById('description'),form=document.getElementById('form'),status=document.getElementById('status'),button=document.getElementById('submit');
+if(!match){title.textContent='Link unavailable';description.textContent='Open the link from your email again, or request a new link in Whassabi.'}
+else {
+ const kind=match[1],token=match[2];
+ title.textContent=kind==='reset'?'Set a new password':'Verify your email';
+ description.textContent=kind==='reset'?'Use 8–128 characters. Your other sign-ins will end when you reset your password.':'Confirm that this email address belongs to you.';
+ form.hidden=false;button.textContent=kind==='reset'?'Save new password':'Verify email';
+ if(kind==='verify'){document.getElementById('password-label').hidden=true;document.getElementById('password').required=false}
+ form.onsubmit=async event=>{event.preventDefault();button.disabled=true;status.textContent='';
+  try{const response=await fetch('/api/account/'+kind,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'omit',referrerPolicy:'no-referrer',body:JSON.stringify({token,...(kind==='reset'?{password:document.getElementById('password').value}:{})})});
+   const result=await response.json();if(!response.ok)throw Error(result.error||'Please try again.');
+   form.hidden=true;status.textContent=kind==='reset'?'Password updated. Open Whassabi and sign in with your new password.':'Email verified. You can return to Whassabi.';
+  }catch(error){status.textContent=error.message;button.disabled=false}
+ };
+}
+</script></body></html>

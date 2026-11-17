@@ -4,8 +4,16 @@ import { DurableObject } from 'cloudflare:workers';
 import turn from '../../lib/turn.js';
 import push from '../../lib/push.js';
 import links from '../../lib/links.js';
+import accountsLib from '../../lib/accounts.js';
+import safetyLib from '../../lib/safety.js';
+import security from '../../lib/security.js';
+import backupsLib from '../../lib/backups.js';
+import operations from '../../lib/operations.js';
+import opsApi from '../../lib/ops-api.js';
+import { backupSource } from './backup-source.js';
 
 export default {
+  async scheduled(event, env, context) { context.waitUntil(env.HUB.get(env.HUB.idFromName('main')).runBackup()); },
   async fetch(request, env) {
     const path = new URL(request.url).pathname, redirect = links.roomRedirect(path);
     if (redirect) return new Response(null, { status: 302, headers: { Location: redirect, 'Cache-Control': 'no-store' } });
@@ -33,7 +41,7 @@ async function hashPw(pw, salt) {
   const k = await crypto.subtle.importKey('raw', enc.encode(pw), 'PBKDF2', false, ['deriveBits']);
   return toHex(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(salt), iterations: 100000 }, k, 256));
 }
-const json = (code, obj, headers = {}) => new Response(JSON.stringify(obj), { status: code, headers: { 'Content-Type': 'application/json', ...headers } });
+const json = (code, obj, headers = {}) => new Response(JSON.stringify(obj), { status: code, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers } });
 
 export class Hub extends DurableObject {
   constructor(ctx, env) {
@@ -41,26 +49,57 @@ export class Hub extends DurableObject {
     this.env = env; this.sql = ctx.storage.sql;
     this.turn = turn.createTurnService(env);
     this.lifecycle = ctx;
-    this.pushSender = push.createFcm(env, { onFailure: result => console.warn('WhassabiPush delivery failed', result) });
-    this.online = new Map(); this.hits = new Map(); this.rooms = new Map(); this.roomOf = new Map(); this.grace = new Map();
-    this.D = { users: {}, sessions: {}, msgs: [], reports: [], friends: [], follows: [], feed: [], pushDevices: {} };
+    this.pushSender = push.createFcm(env, { onFailure: result => this.monitor?.record('push', result.code || 0) });
+    this.socketSessions = new WeakMap(); this.online = new Map(); this.hits = new Map(); this.rooms = new Map(); this.roomOf = new Map(); this.grace = new Map();
+    this.D = { users: {}, sessions: {}, msgs: [], reports: [], friends: [], follows: [], feed: [], pushDevices: {}, accountTokens: {}, rate: {}, blocks: [], ops: {} };
     this.push = push.createPushRegistry({ devices: this.D.pushDevices, sender: this.pushSender,
       sessionOwner: session => this.D.sessions[session], put: record => this.put('push', record.id, record), remove: id => this.del('push', id) });
+    this.mail = accountsLib.createMailer(env, { onFailure: result => this.monitor?.record('mail', result.status) });
+    this.accounts = accountsLib.createAccounts({ users: this.D.users, tokens: this.D.accountTokens, mail: this.mail,
+      limiter: security.createLimiter({ state: this.D.rate, put: (id, item) => this.put('rate', id, item), remove: id => this.del('rate', id) }),
+      putToken: (id, item) => this.put('accountToken', id, item), removeToken: id => this.del('accountToken', id), userChanged: user => { if (this.D.users[user.id] !== user) throw security.problem(409, 'Account state changed. Try again.'); this.put('user', user.id, user); },
+      hashPassword: async password => { const salt = hex(16); return { salt, pw: await hashPw(password, salt) }; },
+      revokeUser: uid => {
+        for (const [session, owner] of Object.entries(this.D.sessions)) if (owner === uid) { this.push.logout(session); delete this.D.sessions[session]; this.del('session', session); }
+        for (const ws of this.online.get(uid) || []) ws.close(4401, 'session revoked'); this.leave(uid);
+      },
+    });
+    this.safety = safetyLib.createSafety({ data: this.D, areFriends: (a, b) => this.areFriends(a, b), put: (...args) => this.put(...args), remove: (...args) => this.del(...args), separate: (a, b) => {
+      const room = this.rooms.get(this.roomOf.get(a));
+      if (room?.members.has(b)) this.removeMember(room, room.host === a ? b : a, 'You left a room shared with a blocked user.');
+      this.pushFr(a, b); this.sendTo(a, { type: 'safety:changed' }); this.sendTo(b, { type: 'safety:changed' }); this.bcastRooms();
+    } });
     ctx.blockConcurrencyWhile(async () => {
       this.sql.exec('CREATE TABLE IF NOT EXISTS kv (kind TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY (kind, k))');
       this.sql.exec('CREATE TABLE IF NOT EXISTS photos (uid TEXT PRIMARY KEY, type TEXT, data TEXT)');
       this.sql.exec('CREATE TABLE IF NOT EXISTS voice (id TEXT PRIMARY KEY, data BLOB)');
       const D = this.D;
-      for (const r of this.sql.exec('SELECT kind, k, v FROM kv')) {
-        const o = JSON.parse(r.v);
-        if (r.kind === 'user') D.users[r.k] = o; else if (r.kind === 'session') D.sessions[r.k] = o;
-        else if (r.kind === 'msg') D.msgs.push(o); else if (r.kind === 'friend') D.friends.push(o);
-        else if (r.kind === 'follow') D.follows.push(o); else if (r.kind === 'feed') D.feed.push(o); else if (r.kind === 'report') D.reports.push(o);
-        else if (r.kind === 'push') D.pushDevices[r.k] = o;
-      }
-      D.msgs.sort((a, b) => a.ts - b.ts); D.feed.sort((a, b) => a.ts - b.ts);
+      this.loadState();
+      this.monitor = operations.createMonitor({ state: this.D.ops.monitor ||= {}, save: value => this.put('ops', 'monitor', value), log: value => console.warn(JSON.stringify(value)) });
+      this.backups = backupsLib.createBackups({ backend: 'worker', bucket: env.BACKUPS, source: backupSource(this), status: this.D.ops.backup ||= {}, saveStatus: value => this.put('ops', 'backup', value), onEvent: (category, status) => this.monitor.record(category, status) });
+      this.operator = opsApi.createOpsApi({ env, monitor: this.monitor, backups: this.backups, reports: () => this.D.reports,
+        updateReport: (id, status) => { const report = this.D.reports.find(r => r.id === id); if (!report) return false; report.status = status; report.reviewedAt = Date.now(); this.put('report', id, report); return true; } });
+      if (env.BACKUPS && (!this.backups.status.lastSuccess || Date.now() - this.backups.status.lastSuccess > 86400000) && (!this.backups.status.lastAttempt || Date.now() - this.backups.status.lastAttempt > 900000)) this.lifecycle.waitUntil(this.runBackup().catch(() => {}));
     });
   }
+
+  loadState(reset = false) {
+    const D = this.D;
+    if (reset) {
+      for (const field of ['users', 'sessions', 'pushDevices', 'accountTokens', 'rate']) for (const key of Object.keys(D[field])) delete D[field][key];
+      for (const field of ['msgs', 'reports', 'friends', 'follows', 'feed', 'blocks']) D[field].length = 0;
+    }
+    for (const row of this.sql.exec('SELECT kind, k, v FROM kv')) {
+      const value = JSON.parse(row.v);
+      const maps = { user: 'users', session: 'sessions', push: 'pushDevices', accountToken: 'accountTokens', rate: 'rate' };
+      const arrays = { msg: 'msgs', report: 'reports', friend: 'friends', follow: 'follows', feed: 'feed', block: 'blocks' };
+      if (maps[row.kind]) D[maps[row.kind]][row.k] = value;
+      else if (arrays[row.kind]) { if (row.kind === 'report' && !value.id) value.id = row.k; D[arrays[row.kind]].push(value); }
+      else if (row.kind === 'ops' && !reset) D.ops[row.k] = value;
+    }
+    D.msgs.sort((a, b) => a.ts - b.ts); D.feed.sort((a, b) => a.ts - b.ts);
+  }
+  async runBackup() { return this.backups.run(); }
 
   // ---------- persistence (write-through) ----------
   put(kind, k, o) { this.sql.exec('INSERT OR REPLACE INTO kv (kind, k, v) VALUES (?, ?, ?)', kind, k, JSON.stringify(o)); }
@@ -73,9 +112,11 @@ export class Hub extends DurableObject {
     return { id: u.id, nick: u.nick, nat: u.nat, learn: u.learn, lv: u.lv, bio: u.bio || '', dm: u.dm === 'friends' ? 'friends' : 'everyone', ts: u.ts || 0,
       followers: D.follows.filter(f => f.b === u.id).length, following: D.follows.filter(f => f.a === u.id).length, hosted: u.hosted || 0, photo: u.photo ? u.photo.v : 0 };
   }
+  own(user) { return { ...this.pub(user), email: user.email, emailVerified: !!user.emailVerified }; }
   limited(uid, kind, max, ms) {
     const k = uid + kind, now = Date.now(), a = (this.hits.get(k) || []).filter(t => now - t < ms);
-    a.push(now); this.hits.set(k, a); return a.length > max;
+    if (a.length >= max) { this.hits.set(k, a); return true; }
+    a.push(now); this.hits.set(k, a); return false;
   }
   authUser(tok) { return this.D.users[this.D.sessions[tok]]; }
   async newSession(uid) { const t = hex(24); this.D.sessions[t] = uid; this.put('session', t, uid); return t; }
@@ -86,7 +127,7 @@ export class Hub extends DurableObject {
     const out = { friends: [], incoming: [], outgoing: [] };
     for (const f of this.D.friends) {
       if (f.a !== uid && f.b !== uid) continue;
-      const o = f.a === uid ? f.b : f.a, u = this.D.users[o]; if (!u) continue;
+      const o = f.a === uid ? f.b : f.a, u = this.D.users[o]; if (!u || this.safety.blocked(uid, o)) continue;
       const p = { ...this.pub(u), on: this.online.has(o) };
       if (f.status === 'accepted') out.friends.push(p); else if (f.by === uid) out.outgoing.push(p); else out.incoming.push(p);
     }
@@ -100,7 +141,8 @@ export class Hub extends DurableObject {
     return { id: r.id, title: r.title, topic: r.topic, desc: r.desc || '', cover: r.cover || 0, audience: r.audience || 'everyone', lang: r.lang, host: r.host, hostNick: D.users[r.host]?.nick || '', n: r.members.size,
       members: [...r.members].map(([u, m]) => ({ uid: u, nick: D.users[u]?.nick || 'Guest', role: m.role, hand: m.hand, muted: !!m.muted, invited: !!m.invited })) };
   }
-  bcastRooms() { const s = JSON.stringify({ type: 'rooms', rooms: [...this.rooms.values()].map(r => this.view(r)) }); for (const set of this.online.values()) for (const c of set) this.safe(c, s); }
+  roomsFor(uid) { return [...this.rooms.values()].filter(room => this.safety.visibleRoom(uid, room)).map(room => this.view(room)); }
+  bcastRooms() { for (const [uid, set] of this.online) { const data = JSON.stringify({ type: 'rooms', rooms: this.roomsFor(uid) }); for (const ws of set) this.safe(ws, data); } }
   roomUpdate(r) { for (const u of r.members.keys()) this.sendTo(u, { type: 'room:state', room: this.view(r) }); }
   deliverMessage(message, kind = 'message', target = message.from) {
     this.D.msgs.push(message); this.put('msg', message.id, message);
@@ -119,10 +161,11 @@ export class Hub extends DurableObject {
         if (!row) return new Response(null, { status: 404 });
         return new Response(bytesOf(row.data), { headers: { 'Content-Type': row.type, 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' } });
       }
-      if (url.pathname === '/healthz') return new Response('ok', { headers: { 'X-Voice-Relay': this.turn.status, 'X-Voice-Relay-Provider': this.turn.provider, 'X-Push': this.pushSender?.configured ? 'configured' : 'missing', 'Cache-Control': 'no-store' } });
+      if (url.pathname.startsWith('/internal/ops/')) return await this.operator(request, () => security.readJson(request, 4096));
+      if (url.pathname === '/healthz') { this.sql.exec('SELECT 1 AS ok').toArray(); return new Response('ok', { headers: { 'X-Voice-Relay': this.turn.status, 'X-Voice-Relay-Provider': this.turn.provider, 'X-Push': this.pushSender?.configured ? 'configured' : 'missing', 'X-Mail': this.mail?.configured ? 'configured' : 'missing', 'X-Backup': this.backups?.health() || 'missing', 'Cache-Control': 'no-store' } }); }
       if (url.pathname.startsWith('/api/')) return await this.api(request, url);
       return new Response('Not found', { status: 404 });
-    } catch (e) { return json(500, { error: 'Server error' }); }
+    } catch (error) { if (!error.status || error.status >= 500) this.monitor?.record('http', error.status || 500); return json(error.status || 500, { error: error.status ? error.message : 'Server error' }); }
   }
 
   async api(request, url) {
@@ -130,9 +173,18 @@ export class Hub extends DurableObject {
     let b = {};
     if (request.method !== 'GET') {
       const max = url.pathname === '/api/me/photo' ? 300000 : url.pathname === '/api/voice' ? 700000 : 20000;
-      const txt = await request.text();
-      if (txt.length > max) return json(413, { error: 'Request too large' });
-      try { b = JSON.parse(txt || '{}'); } catch { b = {}; }
+      b = await security.readJson(request, max);
+    }
+    const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+    if (route === 'GET /api/account/status') return json(200, { emailAvailable: this.mail.configured }, { 'Cache-Control': 'no-store' });
+    if (route === 'POST /api/account/request-reset') return json(200, await this.accounts.requestReset(b.email, ip), { 'Cache-Control': 'no-store' });
+    if (route === 'POST /api/account/reset' || route === 'POST /api/account/verify') {
+      if (!await this.accounts.allow('consume', ip, b.token)) return json(429, { error: 'Too many requests. Try again later.' });
+      return json(200, route.endsWith('/reset') ? await this.accounts.reset(b.token, b.password) : await this.accounts.verify(b.token), { 'Cache-Control': 'no-store' });
+    }
+    if (route === 'POST /api/signup' || route === 'POST /api/login') {
+      if (!await this.accounts.allow(route.endsWith('/signup') ? 'signup' : 'login', ip, b.email)) return json(429, { error: 'Too many attempts. Try again later.' });
+      if (String(b.password || '').length > (route.endsWith('/signup') ? 128 : 4096)) return json(400, { error: 'That password is too long.' });
     }
     if (route === 'POST /api/signup') {
       const email = clean(b.email, 120).toLowerCase(), nick = clean(b.nick, 20);
@@ -144,12 +196,13 @@ export class Hub extends DurableObject {
       const salt = hex(16), id = hex(6);
       const u = { id, email, salt, pw: await hashPw(String(b.password), salt), nick, ...fields(b), bio: '', ts: Date.now() };
       D.users[id] = u; this.put('user', id, u);
-      return json(200, { token: await this.newSession(id), me: this.pub(u) });
+      return json(200, { token: await this.newSession(id), me: this.own(u) });
     }
     if (route === 'POST /api/login') {
       const u = Object.values(D.users).find(x => x.email === clean(b.email, 120).toLowerCase());
       if (!u || (await hashPw(String(b.password || ''), u.salt)) !== u.pw) return json(401, { error: 'Wrong email or password' });
-      return json(200, { token: await this.newSession(u.id), me: this.pub(u) });
+      if (this.D.users[u.id] !== u) return json(409, { error: 'Account state changed. Try again.' });
+      return json(200, { token: await this.newSession(u.id), me: this.own(u) });
     }
     if (route === 'POST /api/push/refresh') {
       if (!D.pushDevices[b.deviceId] || this.limited(b.deviceId, 'pushRefresh', 30, 60000) || !this.push.refresh(b)) return json(404, { error: 'Registration expired' }, { 'Cache-Control': 'no-store' });
@@ -167,7 +220,7 @@ export class Hub extends DurableObject {
       }
       return json(200, {});
     }
-    if (route === 'GET /api/me') return json(200, this.pub(me));
+    if (route === 'GET /api/me') return json(200, this.own(me));
     if (route === 'PUT /api/me') {
       Object.assign(me, fields({ ...me, ...b }));
       if (b.nick !== undefined && clean(b.nick, 20)) {
@@ -178,9 +231,16 @@ export class Hub extends DurableObject {
       }
       if (b.bio !== undefined) me.bio = clean(b.bio, 200);
       if (b.dm !== undefined) me.dm = b.dm === 'friends' ? 'friends' : 'everyone';
-      this.put('user', me.id, me); return json(200, this.pub(me));
+      this.put('user', me.id, me); return json(200, this.own(me));
     }
-    if (route === 'POST /api/logout') { this.push?.logout(tok); delete D.sessions[tok]; this.del('session', tok); return json(200, {}); }
+    if (route === 'POST /api/account/request-verification') return json(200, await this.accounts.requestVerification(me.id), { 'Cache-Control': 'no-store' });
+    if (route === 'GET /api/blocks') return json(200, D.blocks.filter(b => b.by === me.id).map(b => D.users[b.who]).filter(Boolean).map(user => this.pub(user)));
+    if (route === 'POST /api/block' || route === 'POST /api/unblock') {
+      if (this.limited(me.id, 'blocks', 30, 60000)) return json(429, { error: 'Too many requests. Try again shortly.' });
+      if (route === 'POST /api/block') this.safety.block(me.id, clean(b.id, 20)); else this.safety.unblock(me.id, clean(b.id, 20));
+      this.bcastRooms(); return json(200, {});
+    }
+    if (route === 'POST /api/logout') { this.push?.logout(tok); delete D.sessions[tok]; this.del('session', tok); for (const ws of this.online.get(me.id) || []) if (this.socketSessions?.get(ws) === tok) ws.close(4401, 'signed out'); return json(200, {}); }
     if (route === 'GET /api/push/status') return json(200, { configured: this.pushSender.configured }, { 'Cache-Control': 'no-store' });
     if (route === 'POST /api/push/register') {
       if (this.limited(me.id, 'pushRegister', 20, 60000)) return json(429, { error: 'Try again shortly' });
@@ -191,8 +251,9 @@ export class Hub extends DurableObject {
     if (request.method === 'POST' && invitation) {
       const room = this.rooms.get(invitation[1]), to = D.users[clean(b.to, 20)];
       if (!room || !room.members.has(me.id)) return json(404, { error: 'That room is no longer available' });
-      if (!to || !this.areFriends(me.id, to.id)) return json(403, { error: 'Invite someone from your friends list' });
+      if (!to || this.safety.blocked(me.id, to.id) || !this.areFriends(me.id, to.id)) return json(403, { error: 'Invite someone from your friends list' });
       if (room.audience === 'followers' && room.host !== to.id && !this.areFriends(room.host, to.id) && !D.follows.some(f => f.a === to.id && f.b === room.host)) return json(403, { error: 'This room is for followers of the host' });
+      if (!this.safety.visibleRoom(to.id, room)) return json(403, { error: 'This room is unavailable for that user.' });
       if (room.members.has(to.id)) return json(409, { error: 'They are already in this room' });
       if (this.limited(me.id, 'roomInvite', 10, 60000)) return json(429, { error: 'Too many invitations. Try again shortly' });
       const m = { id: hex(6), from: me.id, to: to.id, kind: 'room_invite', roomId: room.id,
@@ -212,12 +273,12 @@ export class Hub extends DurableObject {
       const okSig = (bytes[0] === 0xff && bytes[1] === 0xd8) || (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) || (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46);
       if (bytes.length > 150000 || !okSig) return json(400, { error: 'That photo is too large or not a valid image' });
       this.sql.exec('INSERT OR REPLACE INTO photos (uid, type, data) VALUES (?, ?, ?)', me.id, m[1], m[2]);
-      me.photo = { type: m[1], v: Date.now() }; this.put('user', me.id, me); return json(200, this.pub(me));
+      me.photo = { type: m[1], v: Date.now() }; this.put('user', me.id, me); return json(200, this.own(me));
     }
-    if (route === 'POST /api/me/photo/remove') { this.sql.exec('DELETE FROM photos WHERE uid = ?', me.id); delete me.photo; this.put('user', me.id, me); return json(200, this.pub(me)); }
+    if (route === 'POST /api/me/photo/remove') { this.sql.exec('DELETE FROM photos WHERE uid = ?', me.id); delete me.photo; this.put('user', me.id, me); return json(200, this.own(me)); }
     if (route === 'POST /api/voice') {
       const to = clean(b.to, 20), t = D.users[to];
-      if (!t || t.id === me.id) return json(404, { error: 'User not found' });
+      if (!t || t.id === me.id || this.safety.blocked(me.id, t.id)) return json(404, { error: 'User not found' });
       if (t.dm === 'friends' && !this.areFriends(me.id, to)) return json(403, { error: 'This person only accepts messages from friends' });
       if (this.limited(me.id, 'voice', 10, 60e3)) return json(429, { error: 'Slow down a little' });
       const m = /^data:(audio\/[a-z0-9.+-]+)(?:;[^;,]*)*;base64,([A-Za-z0-9+\/=]+)$/i.exec(String(b.data || ''));
@@ -238,36 +299,36 @@ export class Hub extends DurableObject {
       return new Response(row.data, { headers: { 'Content-Type': m.mime, 'Cache-Control': 'private, max-age=86400' } });
     }
     if (route === 'GET /api/follows') {
-      const list = ids => ids.map(i => D.users[i]).filter(Boolean).map(u => ({ ...this.pub(u), on: this.online.has(u.id) }));
+      const list = ids => ids.filter(i => !this.safety.blocked(me.id, i)).map(i => D.users[i]).filter(Boolean).map(u => ({ ...this.pub(u), on: this.online.has(u.id) }));
       return json(200, { following: list(D.follows.filter(f => f.a === me.id).map(f => f.b)), followers: list(D.follows.filter(f => f.b === me.id).map(f => f.a)) });
     }
     if (route === 'POST /api/follow') {
-      const t = D.users[clean(b.id, 20)]; if (!t || t.id === me.id) return json(404, { error: 'User not found' });
+      const t = D.users[clean(b.id, 20)]; if (!t || t.id === me.id || this.safety.blocked(me.id, t.id)) return json(404, { error: 'User not found' });
       if (!D.follows.some(f => f.a === me.id && f.b === t.id)) {
         if (this.limited(me.id, 'fol', 60, 3600e3)) return json(429, { error: 'Too many requests. Try again later' });
-        const f = { a: me.id, b: t.id }; D.follows.push(f); this.put('follow', f.a + ':' + f.b, f); this.sendTo(t.id, { type: 'follows' });
+        const f = { a: me.id, b: t.id }; D.follows.push(f); this.put('follow', f.a + ':' + f.b, f); this.sendTo(t.id, { type: 'follows' }); this.bcastRooms();
       }
       return json(200, {});
     }
     if (route === 'POST /api/unfollow') {
       const tid = clean(b.id, 20);
-      D.follows = D.follows.filter(f => !(f.a === me.id && f.b === tid)); this.del('follow', me.id + ':' + tid); return json(200, {});
+      D.follows = D.follows.filter(f => !(f.a === me.id && f.b === tid)); this.del('follow', me.id + ':' + tid); this.bcastRooms(); return json(200, {});
     }
     if (route === 'GET /api/feed') {
       const set = new Set([me.id, ...this.friendIds(me.id), ...D.follows.filter(f => f.a === me.id).map(f => f.b)]);
-      return json(200, D.feed.filter(x => set.has(x.uid)).slice(-40).reverse().map(x => { const rm = this.rooms.get(x.rid), u = D.users[x.uid]; return { ...x, host: u ? this.pub(u) : null, live: !!rm, n: rm ? rm.members.size : 0 }; }));
+      return json(200, D.feed.filter(x => set.has(x.uid) && !this.safety.blocked(me.id, x.uid)).slice(-40).reverse().map(x => { const rm = this.rooms.get(x.rid), u = D.users[x.uid]; return { ...x, host: u ? this.pub(u) : null, live: !!rm, n: rm ? rm.members.size : 0 }; }));
     }
     if (route === 'GET /api/friends') return json(200, this.frList(me.id));
     if (route === 'GET /api/users/search') {
       const q = clean(url.searchParams.get('q'), 20).toLowerCase().replace(/\s+/g, '');
       if (q.length < 2) return json(200, []);
-      return json(200, Object.values(D.users).filter(u => u.id !== me.id && handleOf(u).includes(q)).slice(0, 20).map(u => ({ ...this.pub(u), on: this.online.has(u.id) })));
+      return json(200, Object.values(D.users).filter(u => u.id !== me.id && !this.safety.blocked(me.id, u.id) && handleOf(u).includes(q)).slice(0, 20).map(u => ({ ...this.pub(u), on: this.online.has(u.id) })));
     }
     if (route === 'POST /api/friends/request') {
-      const t = D.users[clean(b.id, 20)]; if (!t || t.id === me.id) return json(404, { error: 'User not found' });
+      const t = D.users[clean(b.id, 20)]; if (!t || t.id === me.id || this.safety.blocked(me.id, t.id)) return json(404, { error: 'User not found' });
       const f = this.frOf(me.id, t.id);
       if (f) {
-        if (f.status === 'pending' && f.by === t.id) { f.status = 'accepted'; this.put('friend', f.a + ':' + f.b, f); this.pushFr(me.id, t.id); return json(200, { status: 'accepted' }); }
+        if (f.status === 'pending' && f.by === t.id) { f.status = 'accepted'; this.put('friend', f.a + ':' + f.b, f); this.pushFr(me.id, t.id); this.bcastRooms(); return json(200, { status: 'accepted' }); }
         return json(200, { status: f.status });
       }
       if (this.limited(me.id, 'fr', 30, 3600e3)) return json(429, { error: 'Too many requests. Try again later' });
@@ -278,16 +339,19 @@ export class Hub extends DurableObject {
       const f = this.frOf(me.id, clean(b.id, 20));
       if (!f || f.status !== 'pending' || f.by === me.id) return json(404, { error: 'No such request' });
       if (b.accept) { f.status = 'accepted'; this.put('friend', f.a + ':' + f.b, f); } else { D.friends.splice(D.friends.indexOf(f), 1); this.del('friend', f.a + ':' + f.b); }
-      this.pushFr(f.a, f.b); return json(200, {});
+      this.pushFr(f.a, f.b); this.bcastRooms(); return json(200, {});
     }
     if (route === 'POST /api/friends/remove') {
       const f = this.frOf(me.id, clean(b.id, 20));
-      if (f) { D.friends.splice(D.friends.indexOf(f), 1); this.del('friend', f.a + ':' + f.b); this.pushFr(f.a, f.b); }
+      if (f) { D.friends.splice(D.friends.indexOf(f), 1); this.del('friend', f.a + ':' + f.b); this.pushFr(f.a, f.b); this.bcastRooms(); }
       return json(200, {});
     }
-    if (route === 'GET /api/users') return json(200, Object.values(D.users).filter(u => u.id !== me.id).map(u => ({ ...this.pub(u), on: this.online.has(u.id) })));
+    if (route === 'GET /api/users') return json(200, Object.values(D.users).filter(u => u.id !== me.id && !this.safety.blocked(me.id, u.id)).map(u => ({ ...this.pub(u), on: this.online.has(u.id) })));
     if (route === 'GET /api/messages') return json(200, D.msgs.filter(m => m.from === me.id || m.to === me.id).slice(-500));
-    if (route === 'POST /api/report') { const r = { by: me.id, who: clean(b.id, 20), ts: Date.now() }; D.reports.push(r); this.put('report', r.ts + ':' + r.by, r); return json(200, {}); }
+    if (route === 'POST /api/report') {
+      if (this.limited(me.id, 'reports', 10, 3600000)) return json(429, { error: 'Too many reports. Try again later.' });
+      return json(200, { id: this.safety.report(me.id, b) });
+    }
     if (route === 'POST /api/ai') {
       const KEY = this.env.ANTHROPIC_API_KEY;
       if (!KEY) return json(501, { error: 'Set ANTHROPIC_API_KEY on the server to enable translation' });
@@ -328,6 +392,7 @@ export class Hub extends DurableObject {
     if (cur.host === me.id && cur.members.size > 1) { err('Hand over or end your current room first'); return false; }
     this.leave(me.id); return true;
   }
+  removeMember(room, uid, reason) { this.sendTo(uid, { type: 'room:removed', id: room.id, reason }); this.leave(uid); }
   roomMsg(me, d) {
     const D = this.D, err = error => this.sendTo(me.id, { type: 'room:error', error, ...(d.type === 'room:join' ? { requestRoomId: clean(d.id, 20) } : {}) });
     const cur = this.rooms.get(this.roomOf.get(me.id));
@@ -344,8 +409,10 @@ export class Hub extends DurableObject {
       this.sendTo(me.id, { type: 'room:joined', room: this.view(r), leaveToken: r.members.get(me.id).leaveToken }); return this.bcastRooms();
     }
     if (d.type === 'room:join') {
+      if (this.limited(me.id, 'join', 30, 60000)) return err('Too many room attempts. Try again shortly.');
       const r = this.rooms.get(d.id); if (!r) return err('That room has ended');
       if (r.audience === 'followers' && r.host !== me.id && !D.follows.some(f => f.a === me.id && f.b === r.host) && !this.areFriends(me.id, r.host)) return err('Only followers of ' + (D.users[r.host]?.nick || 'the host') + ' can join this room');
+      if (!this.safety.visibleRoom(me.id, r) || r.removed?.has(me.id)) return err('You cannot join this room.');
       if (cur === r) return;
       if (r.members.size >= MAXR) return err('This room is full (max ' + MAXR + ')');
       if (cur && !this.releaseCur(me, cur, err)) return;
@@ -361,6 +428,11 @@ export class Hub extends DurableObject {
         cur.host = d.transfer;
       }
       return this.leave(me.id);
+    }
+    if (d.type === 'room:kick') {
+      if (cur.host !== me.id || d.uid === me.id || !cur.members.has(d.uid) || this.limited(me.id, 'kick', 20, 60000)) return;
+      cur.removed ||= new Set(); cur.removed.add(d.uid);
+      return this.removeMember(cur, d.uid, 'The host removed you from this room.');
     }
     if (d.type === 'room:hand') { cur.members.get(me.id).hand = !!d.on; return this.roomUpdate(cur); }
     if (d.type === 'room:role') {
@@ -413,11 +485,11 @@ export class Hub extends DurableObject {
     ws.accept();
     const me = this.authUser(url.searchParams.get('token'));
     if (!me) { ws.close(4401, 'unauthorized'); return new Response(null, { status: 101, webSocket: client }); }
-    const D = this.D;
+    const D = this.D; this.socketSessions.set(ws, url.searchParams.get('token'));
     if (!this.online.has(me.id)) this.online.set(me.id, new Set());
     this.online.get(me.id).add(ws);
     if (this.online.get(me.id).size === 1) this.pushFr(...this.friendIds(me.id));
-    this.safe(ws, JSON.stringify({ type: 'rooms', rooms: [...this.rooms.values()].map(r => this.view(r)) }));
+    this.safe(ws, JSON.stringify({ type: 'rooms', rooms: this.roomsFor(me.id) }));
     clearTimeout(this.grace.get(me.id)); this.grace.delete(me.id);
     const seat = this.rooms.get(this.roomOf.get(me.id));
     if (seat) {
@@ -428,11 +500,13 @@ export class Hub extends DurableObject {
       if (this.authUser(url.searchParams.get('token'))?.id !== me.id) { ws.close(4401, 'unauthorized'); return; }
       const raw = ev.data; if (typeof raw !== 'string' || raw.length > 16384) return;
       let d; try { d = JSON.parse(raw); } catch { return; }
+      if (!d || typeof d !== 'object' || Array.isArray(d)) return;
       if (d.type === 'ping') return this.safe(ws, JSON.stringify({ type: 'pong' }));
       if (String(d.type).startsWith('room:')) return this.roomMsg(me, d);
       if (d.type !== 'msg') return;
       const t = clean(d.t, 500);
       if (!t || !D.users[d.to] || d.to === me.id) return;
+      if (this.safety.blocked(me.id, d.to)) return this.safe(ws, JSON.stringify({ type: 'error', error: 'Messaging is unavailable for this user.' }));
       if (D.users[d.to].dm === 'friends' && !this.areFriends(me.id, d.to)) return this.safe(ws, JSON.stringify({ type: 'error', error: 'This person only accepts messages from friends' }));
       if (this.limited(me.id, 'msg', 20, 10e3)) return this.safe(ws, JSON.stringify({ type: 'error', error: 'Slow down a little' }));
       const m = { id: hex(6), from: me.id, to: d.to, t, ts: Date.now() };

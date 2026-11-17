@@ -4,3 +4,8 @@ data.json
 voice
 *.keystore
 *service-account*.json
+
+backups/
+artifacts/
+cloudflare/wrangler.deploy.json
+cloudflare/wrangler.deploy.toml

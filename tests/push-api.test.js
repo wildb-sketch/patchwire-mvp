@@ -40,8 +40,9 @@ test('push registration, logout, friend invitations, room privacy and link fallb
  assert.equal((await api('/rooms/' + room.id + '/invite', c, { to: b.me.id })).status, 404);
  const redirected = await fetch(base + '/room/' + room.id, { redirect: 'manual' }); assert.equal(redirected.status, 302); assert.equal(redirected.headers.get('Location'), '/neon#room=' + room.id);
  assert.equal((await fetch(base + '/.well-known/assetlinks.json')).status, 200);
+ const loggedOut = new Promise(resolve => guest.ws.once('close', code => resolve(code)));
  await api('/logout', b, {});
  assert.equal((await api('/push/refresh', null, { ...registration, token })).status, 404);
- guest.ws.send(JSON.stringify({ type: 'msg', to: a.me.id, t: 'revoked session' }));
- await new Promise(resolve => guest.ws.once('close', resolve));
+ assert.equal(await loggedOut, 4401);
+ assert.equal((await api('/me', b)).status, 401);
 });
