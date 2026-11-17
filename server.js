@@ -4,7 +4,7 @@ const { createTurnService, relayFailure } = require('./lib/turn');
 const turn = createTurnService(process.env);
 const { createFcm, createPushRegistry } = require('./lib/push');
 const links = require('./lib/links');
-const pushSender = createFcm(process.env);
+const pushSender = createFcm(process.env, { onFailure: result => console.warn('WhassabiPush delivery failed', result) });
 const PORT = process.env.PORT || 3000;
 const FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 const VOICE_DIR = process.env.VOICE_DIR || path.join(path.dirname(FILE), 'voice');

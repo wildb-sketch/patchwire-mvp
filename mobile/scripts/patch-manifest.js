@@ -107,6 +107,8 @@ const gradlePath = path.join(appDir, 'build.gradle');
 if (fs.existsSync(gradlePath)) {
   let gradle = fs.readFileSync(gradlePath, 'utf8');
   if (!gradle.includes('com.google.firebase:firebase-messaging:')) gradle = gradle.replace('dependencies {', "dependencies {\n    implementation 'com.google.firebase:firebase-messaging:24.1.2'");
+  if (!gradle.includes('org.robolectric:robolectric:')) gradle = gradle.replace('dependencies {', "dependencies {\n    testImplementation 'org.robolectric:robolectric:4.13'");
+  if (!gradle.includes('includeAndroidResources = true')) gradle += '\nandroid.testOptions.unitTests.includeAndroidResources = true\n';
   if (!gradle.includes('WHASSABI_DEBUG_KEYSTORE')) gradle += `
 // A private, persistent test signing key enables verified links and repeatable APK updates.
 if (System.getenv('WHASSABI_DEBUG_KEYSTORE')) {

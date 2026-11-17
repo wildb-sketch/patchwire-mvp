@@ -78,11 +78,34 @@ test('FCM signs valid server-only OAuth JWTs and sends generic account-bound dat
   assert.equal(message.token, token); assert.equal(message.notification, undefined);
   assert.deepEqual(message.data, { kind: 'message', target: other, eventId: '1'.repeat(12), recipient: uid, binding: 'fixture-binding' });
   assert.equal(message.android.priority, 'HIGH');
+  assert.equal(message.android.collapse_key, undefined);
   return Response.json({ name: 'projects/fixture/messages/1' });
  } });
  const device = { uid, token, binding: 'fixture-binding' }, event = { kind: 'message', target: other, id: '1'.repeat(12) };
  const results = await Promise.all([fcm.send(device, event), fcm.send(device, event)]);
  assert(results.every(r => r.status === 'sent')); assert.equal(auth, 1); assert.equal(sends, 2);
+});
+test('each distinct message is sent and an expired cached Google token is refreshed without dropping it', async () => {
+ const { env } = await credentials(); let auth = 0;
+ const accepted = [], failures = [];
+ const sender = createFcm(env, { onFailure: result => failures.push(result), fetch: async (url, options) => {
+  if (url.includes('oauth2')) return Response.json({ access_token: 'access-' + ++auth, expires_in: 3600 });
+  const { message } = JSON.parse(options.body);
+  if (message.data.eventId === '2'.repeat(12) && options.headers.Authorization === 'Bearer access-1') return new Response(null, { status: 401 });
+  assert.equal(message.android.collapse_key, undefined);
+  accepted.push(message.data.eventId); return Response.json({ name: 'accepted' });
+ } });
+ for (let i = 1; i <= 3; i++) assert.equal((await sender.send({ uid, token, binding: 'fixture-binding' }, { kind: 'message', target: other, id: String(i).repeat(12) })).status, 'sent');
+ assert.equal(auth, 2); assert.deepEqual(accepted, ['1'.repeat(12), '2'.repeat(12), '3'.repeat(12)]); assert.deepEqual(failures, []);
+});
+test('a repeatedly rejected Google token stops after one refresh and reports only sanitized status', async () => {
+ const { env } = await credentials(); let requests = 0; const failures = [];
+ const sender = createFcm(env, { onFailure: result => failures.push(result), fetch: async url => {
+  if (url.includes('oauth2')) return Response.json({ access_token: 'private-access-token', expires_in: 3600 });
+  requests++; return new Response('private-provider-diagnostics', { status: 401 });
+ } });
+ assert.deepEqual(await sender.send({ uid, token, binding: 'binding' }, { kind: 'message', target: other, id: '1'.repeat(12) }), { status: 'failed', code: 401 });
+ assert.equal(requests, 2); assert.deepEqual(failures, [{ status: 'failed', stage: 'fcm', code: 401 }]);
 });
 test('FCM errors do not expose credentials and only explicit UNREGISTERED marks a stale token', async () => {
  const { env } = await credentials();

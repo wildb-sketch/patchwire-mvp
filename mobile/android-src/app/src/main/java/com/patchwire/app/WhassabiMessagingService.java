@@ -15,7 +15,7 @@ public class WhassabiMessagingService extends FirebaseMessagingService {
         String kind = data.get("kind"), target = data.get("target"), uid = data.get("recipient"), binding = data.get("binding"), event = data.get("eventId");
         if (!("message".equals(kind) || "room".equals(kind)) || target == null || event == null || !event.matches("[a-f0-9]{12}") ||
                 NavigationTarget.of("message".equals(kind) ? "chat" : "room", target, uid) == null || !PushStore.matches(this, uid, binding)) return;
-        if (PushStore.seen(this, event) || PushStore.visible || !PushStore.enabled(this)) return;
+        if (PushStore.visible || !PushStore.enabled(this)) return;
         Intent intent = new Intent(this, MainActivity.class).setAction("com.patchwire.app.OPEN_PUSH")
             .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP)
             .setData(Uri.parse("whassabi-notification://" + kind + "/" + target + "/" + uid))
@@ -24,9 +24,9 @@ public class WhassabiMessagingService extends FirebaseMessagingService {
         String tag = "whassabi:" + uid + ":" + kind + ":" + target;
         NotificationCompat.Builder notification = new NotificationCompat.Builder(this, PushStore.CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_email).setContentTitle("Whassabi")
-            .setContentText("room".equals(kind) ? "You have a room invitation" : "You have a new private message")
             .setCategory(NotificationCompat.CATEGORY_MESSAGE).setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setContentIntent(open).setAutoCancel(true).setOnlyAlertOnce(true);
-        PushStore.post(this, uid, binding, tag, notification.build());
+            .setContentIntent(open).setAutoCancel(true).setOnlyAlertOnce(false)
+            .setWhen(System.currentTimeMillis()).setShowWhen(true);
+        PushStore.post(this, uid, binding, tag, event, "room".equals(kind), notification);
     }
 }

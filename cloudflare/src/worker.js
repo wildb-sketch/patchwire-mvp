@@ -41,7 +41,7 @@ export class Hub extends DurableObject {
     this.env = env; this.sql = ctx.storage.sql;
     this.turn = turn.createTurnService(env);
     this.lifecycle = ctx;
-    this.pushSender = push.createFcm(env);
+    this.pushSender = push.createFcm(env, { onFailure: result => console.warn('WhassabiPush delivery failed', result) });
     this.online = new Map(); this.hits = new Map(); this.rooms = new Map(); this.roomOf = new Map(); this.grace = new Map();
     this.D = { users: {}, sessions: {}, msgs: [], reports: [], friends: [], follows: [], feed: [], pushDevices: {} };
     this.push = push.createPushRegistry({ devices: this.D.pushDevices, sender: this.pushSender,
