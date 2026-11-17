@@ -82,3 +82,15 @@ test('new ICE candidates arriving before restart SDP survive the previous ICE ge
  await f.audio.receive('b',{c:{usernameFragment:'next'}});assert.equal(p.candidates.length,1);
  await f.audio.receive('b',{s:{type:'offer',sdp:'a=ice-ufrag:next\r\n'}});assert.equal(p.pc.candidates.at(-1).usernameFragment,'next');
 });
+
+test('a dropped initial offer automatically starts a fresh ICE negotiation',async()=>{
+ const f=fixture(),p=f.audio.connect('b',true);await f.settle();const first=f.sent[0].offerId;
+ await f.fire();assert.equal(p.pc.offers.at(-1).iceRestart,true);assert.notEqual(f.sent.at(-1).offerId,first);assert.equal(p.pc.sender.track,f.track);
+});
+test('rollback may reuse ICE credentials: buffered candidates for the accepted answer are retained',async()=>{
+ const f=fixture(),p=f.audio.connect('b',true);await f.settle();const id=f.sent[0].offerId;
+ await f.audio.receive('b',{s:{type:'offer',sdp:'a=ice-ufrag:reused\r\n'},offerId:'b:old'});
+ await f.audio.receive('b',{c:{usernameFragment:'reused'}});
+ await f.audio.receive('b',{s:{type:'answer',sdp:'a=ice-ufrag:reused\r\n'},answerTo:id});
+ assert.equal(p.pc.candidates.length,1);assert.equal(p.ignoreOffer,false);
+});

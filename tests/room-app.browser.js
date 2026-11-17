@@ -11,7 +11,7 @@ test('both complete app designs retain microphone, mute, chat and room across ne
  let browser;
  t.after(async()=>{await browser?.close();server.kill();await new Promise(r=>server.exitCode!==null?r():server.once('exit',r));fs.rmSync(dir,{recursive:true,force:true})});
  await new Promise((resolve,reject)=>{server.stdout.once('data',resolve);server.once('error',reject)});
- browser=await chromium.launch({headless:true,args:['--no-sandbox','--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream','--autoplay-policy=no-user-gesture-required']});
+ browser=await chromium.launch({headless:true,args:['--no-sandbox','--disable-features=WebRtcHideLocalIpsWithMdns','--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream','--autoplay-policy=no-user-gesture-required']});
  const errors=[],pages=[];
  for(const [nick,route] of [['host','/neon'],['guest','/']]){
   const r=await fetch(base+'/api/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nick,email:nick+'@example.test',password:'test-voice-password'})});const account=await r.json();assert(account.token);

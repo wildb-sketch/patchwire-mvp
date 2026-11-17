@@ -2,18 +2,19 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { chromium } = require('playwright');
+// No relay is used in these loopback fixtures: literal host candidates avoid depending on CI multicast/mDNS.
 let browser;
-before(async()=>{ browser=await chromium.launch({headless:true,args:['--no-sandbox','--autoplay-policy=no-user-gesture-required']}); });
+before(async()=>{ browser=await chromium.launch({headless:true,args:['--no-sandbox','--disable-features=WebRtcHideLocalIpsWithMdns','--autoplay-policy=no-user-gesture-required']}); });
 after(async()=>{ await browser?.close(); });
 async function setup(t) {
  const page=await browser.newPage();t.after(()=>page.close());
  await page.addScriptTag({path:path.join(__dirname,'../public/room-audio.js')});
  await page.evaluate(async()=>{
-  const contexts=[],tracks={},audio={},errors=[],statuses=[];
+  const contexts=[],tracks={},audio={},errors=[],statuses=[],trace=[];
   for(const id of ['a','b']){const ac=new AudioContext(),osc=ac.createOscillator(),out=ac.createMediaStreamDestination();osc.frequency.value=id==='a'?440:660;osc.connect(out);osc.start();await ac.resume();contexts.push(ac);tracks[id]=out.stream.getAudioTracks()[0];}
-  const state=window.rtc={audio,tracks,errors,statuses,ready:true,contexts};
+  const state=window.rtc={audio,tracks,errors,statuses,ready:true,contexts,trace};
   state.make=id=>createRoomAudio({selfId:()=>id,isMember:()=>true,getIce:()=>[],getTrack:()=>tracks[id],signalingReady:()=>state.ready,
-   send:(uid,data)=>{if(!state.ready)return false;queueMicrotask(()=>audio[uid].receive(id,JSON.parse(JSON.stringify(data))));return true},
+   send:(uid,data)=>{if(!state.ready)return false;if(data.s)trace.push({id,to:uid,type:data.s.type,offerId:data.offerId,answerTo:data.answerTo});queueMicrotask(()=>audio[uid].receive(id,JSON.parse(JSON.stringify(data))));return true},
    onStatus:(uid,status)=>statuses.push({id,uid,status}),onError:(uid,e)=>errors.push({id,uid,message:e.message})});
   audio.a=state.make('a');audio.b=state.make('b');
   audio.a.connect('b',true);audio.b.connect('a',true); // Deliberate initial offer collision.
@@ -24,7 +25,8 @@ async function setup(t) {
  return page;
 }
 async function stable(page) {
- await page.waitForFunction(()=>Object.values(rtc.audio).every(a=>Object.values(a.peers).every(p=>p.pc.connectionState==='connected'&&p.pc.signalingState==='stable')),{},{timeout:20000});
+ try { await page.waitForFunction(()=>Object.values(rtc.audio).every(a=>Object.values(a.peers).every(p=>p.pc.connectionState==='connected'&&p.pc.signalingState==='stable')),{},{timeout:20000}); }
+ catch(error){console.error('RTC recovery diagnostics',JSON.stringify(await page.evaluate(()=>({errors:rtc.errors,trace:rtc.trace,states:Object.values(rtc.audio).flatMap(a=>Object.values(a.peers).map(p=>({state:p.pc.connectionState,ice:p.pc.iceConnectionState,signaling:p.pc.signalingState,attempts:p.attempts,queued:p.candidates.length,mdns:!!p.pc.localDescription?.sdp.includes('.local')})))}))));throw error;}
 }
 test('real WebRTC survives simultaneous initial offers and simultaneous ICE restarts', {timeout:30000}, async t=>{
  const page=await setup(t);
