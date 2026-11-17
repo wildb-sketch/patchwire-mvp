@@ -3,13 +3,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const turn = require('../lib/turn');
+const turn = require('../lib/turn'), push = require('../lib/push'), links = require('../lib/links');
 function fixture(env = {}, turnOptions = {}) {
  const source = fs.readFileSync(path.join(__dirname, '../cloudflare/src/worker.js'), 'utf8')
   .replace("import { DurableObject } from 'cloudflare:workers';", '')
-  .replace("import turn from '../../lib/turn.js';", '')
+  .replace("import turn from '../../lib/turn.js';", '').replace("import push from '../../lib/push.js';", '').replace("import links from '../../lib/links.js';", '')
   .replace('export default {', 'const worker = {').replace('export class Hub', 'class Hub');
- const context = vm.createContext({ turn, DurableObject: class {}, TextEncoder, Response, Request, URL, crypto: require('node:crypto').webcrypto, clearTimeout });
+ const context = vm.createContext({ turn, push, links, DurableObject: class {}, TextEncoder, Response, Request, URL, crypto: require('node:crypto').webcrypto, clearTimeout });
  vm.runInContext(source + '\nglobalThis.Hub=Hub;', context);
  const hub = Object.create(context.Hub.prototype), messages = [];
  Object.assign(hub, { env, turn: turn.createTurnService(env, turnOptions), hits: new Map(), D: { users: { u: { id: 'u', nick: 'Guest' }, h: { id: 'h', nick: 'Host' } }, sessions: { auth: 'u' } },

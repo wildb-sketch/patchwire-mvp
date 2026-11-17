@@ -2,9 +2,14 @@
 // to a single Durable Object ("Hub") that owns accounts, messages, rooms and live WebSockets.
 import { DurableObject } from 'cloudflare:workers';
 import turn from '../../lib/turn.js';
+import push from '../../lib/push.js';
+import links from '../../lib/links.js';
 
 export default {
   async fetch(request, env) {
+    const path = new URL(request.url).pathname, redirect = links.roomRedirect(path);
+    if (redirect) return new Response(null, { status: 302, headers: { Location: redirect, 'Cache-Control': 'no-store' } });
+    if (path === '/.well-known/assetlinks.json') return Response.json(links.assetLinks(env.ANDROID_APP_LINK_SHA256), { headers: { 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' } });
     return env.HUB.get(env.HUB.idFromName('main')).fetch(request);
   },
 };
@@ -35,8 +40,12 @@ export class Hub extends DurableObject {
     super(ctx, env);
     this.env = env; this.sql = ctx.storage.sql;
     this.turn = turn.createTurnService(env);
+    this.lifecycle = ctx;
+    this.pushSender = push.createFcm(env);
     this.online = new Map(); this.hits = new Map(); this.rooms = new Map(); this.roomOf = new Map(); this.grace = new Map();
-    this.D = { users: {}, sessions: {}, msgs: [], reports: [], friends: [], follows: [], feed: [] };
+    this.D = { users: {}, sessions: {}, msgs: [], reports: [], friends: [], follows: [], feed: [], pushDevices: {} };
+    this.push = push.createPushRegistry({ devices: this.D.pushDevices, sender: this.pushSender,
+      sessionOwner: session => this.D.sessions[session], put: record => this.put('push', record.id, record), remove: id => this.del('push', id) });
     ctx.blockConcurrencyWhile(async () => {
       this.sql.exec('CREATE TABLE IF NOT EXISTS kv (kind TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY (kind, k))');
       this.sql.exec('CREATE TABLE IF NOT EXISTS photos (uid TEXT PRIMARY KEY, type TEXT, data TEXT)');
@@ -47,6 +56,7 @@ export class Hub extends DurableObject {
         if (r.kind === 'user') D.users[r.k] = o; else if (r.kind === 'session') D.sessions[r.k] = o;
         else if (r.kind === 'msg') D.msgs.push(o); else if (r.kind === 'friend') D.friends.push(o);
         else if (r.kind === 'follow') D.follows.push(o); else if (r.kind === 'feed') D.feed.push(o); else if (r.kind === 'report') D.reports.push(o);
+        else if (r.kind === 'push') D.pushDevices[r.k] = o;
       }
       D.msgs.sort((a, b) => a.ts - b.ts); D.feed.sort((a, b) => a.ts - b.ts);
     });
@@ -92,6 +102,11 @@ export class Hub extends DurableObject {
   }
   bcastRooms() { const s = JSON.stringify({ type: 'rooms', rooms: [...this.rooms.values()].map(r => this.view(r)) }); for (const set of this.online.values()) for (const c of set) this.safe(c, s); }
   roomUpdate(r) { for (const u of r.members.keys()) this.sendTo(u, { type: 'room:state', room: this.view(r) }); }
+  deliverMessage(message, kind = 'message', target = message.from) {
+    this.D.msgs.push(message); this.put('msg', message.id, message);
+    for (const uid of [message.from, message.to]) this.sendTo(uid, { type: 'msg', m: message });
+    if (this.push) this.lifecycle.waitUntil(this.push.notify(message.to, { kind, target, id: message.id }).catch(() => {}));
+  }
 
   // ---------- routing ----------
   async fetch(request) {
@@ -104,7 +119,7 @@ export class Hub extends DurableObject {
         if (!row) return new Response(null, { status: 404 });
         return new Response(bytesOf(row.data), { headers: { 'Content-Type': row.type, 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' } });
       }
-      if (url.pathname === '/healthz') return new Response('ok', { headers: { 'X-Voice-Relay': this.turn.status, 'X-Voice-Relay-Provider': this.turn.provider, 'Cache-Control': 'no-store' } });
+      if (url.pathname === '/healthz') return new Response('ok', { headers: { 'X-Voice-Relay': this.turn.status, 'X-Voice-Relay-Provider': this.turn.provider, 'X-Push': this.pushSender?.configured ? 'configured' : 'missing', 'Cache-Control': 'no-store' } });
       if (url.pathname.startsWith('/api/')) return await this.api(request, url);
       return new Response('Not found', { status: 404 });
     } catch (e) { return json(500, { error: 'Server error' }); }
@@ -136,6 +151,10 @@ export class Hub extends DurableObject {
       if (!u || (await hashPw(String(b.password || ''), u.salt)) !== u.pw) return json(401, { error: 'Wrong email or password' });
       return json(200, { token: await this.newSession(u.id), me: this.pub(u) });
     }
+    if (route === 'POST /api/push/refresh') {
+      if (!D.pushDevices[b.deviceId] || this.limited(b.deviceId, 'pushRefresh', 30, 60000) || !this.push.refresh(b)) return json(404, { error: 'Registration expired' }, { 'Cache-Control': 'no-store' });
+      return json(200, {}, { 'Cache-Control': 'no-store' });
+    }
     const tok = (request.headers.get('authorization') || '').replace('Bearer ', ''), me = this.authUser(tok);
     if (!me) return json(401, { error: 'Please log in' });
     me.ts = Date.now();
@@ -161,7 +180,25 @@ export class Hub extends DurableObject {
       if (b.dm !== undefined) me.dm = b.dm === 'friends' ? 'friends' : 'everyone';
       this.put('user', me.id, me); return json(200, this.pub(me));
     }
-    if (route === 'POST /api/logout') { delete D.sessions[tok]; this.del('session', tok); return json(200, {}); }
+    if (route === 'POST /api/logout') { this.push?.logout(tok); delete D.sessions[tok]; this.del('session', tok); return json(200, {}); }
+    if (route === 'GET /api/push/status') return json(200, { configured: this.pushSender.configured }, { 'Cache-Control': 'no-store' });
+    if (route === 'POST /api/push/register') {
+      if (this.limited(me.id, 'pushRegister', 20, 60000)) return json(429, { error: 'Try again shortly' });
+      try { return json(200, this.push.register(me.id, tok, b), { 'Cache-Control': 'no-store' }); }
+      catch { return json(409, { error: 'Device registration changed. Reopen the app to retry.' }, { 'Cache-Control': 'no-store' }); }
+    }
+    const invitation = /^\/api\/rooms\/([a-f0-9]{8})\/invite$/.exec(url.pathname);
+    if (request.method === 'POST' && invitation) {
+      const room = this.rooms.get(invitation[1]), to = D.users[clean(b.to, 20)];
+      if (!room || !room.members.has(me.id)) return json(404, { error: 'That room is no longer available' });
+      if (!to || !this.areFriends(me.id, to.id)) return json(403, { error: 'Invite someone from your friends list' });
+      if (room.audience === 'followers' && room.host !== to.id && !this.areFriends(room.host, to.id) && !D.follows.some(f => f.a === to.id && f.b === room.host)) return json(403, { error: 'This room is for followers of the host' });
+      if (room.members.has(to.id)) return json(409, { error: 'They are already in this room' });
+      if (this.limited(me.id, 'roomInvite', 10, 60000)) return json(429, { error: 'Too many invitations. Try again shortly' });
+      const m = { id: hex(6), from: me.id, to: to.id, kind: 'room_invite', roomId: room.id,
+        t: `🎙 Join my room “${room.title}” ${url.origin}/room/${room.id}`, ts: Date.now() };
+      this.deliverMessage(m, 'room', room.id); return json(200, { m });
+    }
     if (route === 'GET /api/ice') {
       const headers = { 'Cache-Control': 'no-store' };
       if (this.limited(me.id, 'ice', 30, 60000)) return json(429, { error: 'Please wait before retrying voice.' }, { ...headers, 'Retry-After': '60' });
@@ -190,7 +227,7 @@ export class Hub extends DurableObject {
       const id = hex(6), dur = Math.max(1, Math.min(60, Math.round(Number(b.dur) || 1)));
       this.sql.exec('INSERT INTO voice (id, data) VALUES (?, ?)', id, bytes.buffer);
       const msg = { id, from: me.id, to, kind: 'voice', dur, mime: m[1].toLowerCase(), t: '🎤 Voice message', ts: Date.now() };
-      D.msgs.push(msg); this.put('msg', id, msg); for (const i of [me.id, to]) this.sendTo(i, { type: 'msg', m: msg });
+      this.deliverMessage(msg);
       return json(200, { m: msg });
     }
     if (request.method === 'GET' && url.pathname.startsWith('/api/voice/')) {
@@ -292,7 +329,7 @@ export class Hub extends DurableObject {
     this.leave(me.id); return true;
   }
   roomMsg(me, d) {
-    const D = this.D, err = error => this.sendTo(me.id, { type: 'room:error', error });
+    const D = this.D, err = error => this.sendTo(me.id, { type: 'room:error', error, ...(d.type === 'room:join' ? { requestRoomId: clean(d.id, 20) } : {}) });
     const cur = this.rooms.get(this.roomOf.get(me.id));
     if (d.type === 'room:create') {
       const title = clean(d.title, 40); if (!title) return err('Add a room title');
@@ -388,6 +425,7 @@ export class Hub extends DurableObject {
       this.safe(ws, JSON.stringify({ type: 'room:joined', room: this.view(seat), resumed: true, leaveToken: seat.members.get(me.id).leaveToken }));
     }
     ws.addEventListener('message', ev => {
+      if (this.authUser(url.searchParams.get('token'))?.id !== me.id) { ws.close(4401, 'unauthorized'); return; }
       const raw = ev.data; if (typeof raw !== 'string' || raw.length > 16384) return;
       let d; try { d = JSON.parse(raw); } catch { return; }
       if (d.type === 'ping') return this.safe(ws, JSON.stringify({ type: 'pong' }));
@@ -398,8 +436,7 @@ export class Hub extends DurableObject {
       if (D.users[d.to].dm === 'friends' && !this.areFriends(me.id, d.to)) return this.safe(ws, JSON.stringify({ type: 'error', error: 'This person only accepts messages from friends' }));
       if (this.limited(me.id, 'msg', 20, 10e3)) return this.safe(ws, JSON.stringify({ type: 'error', error: 'Slow down a little' }));
       const m = { id: hex(6), from: me.id, to: d.to, t, ts: Date.now() };
-      D.msgs.push(m); this.put('msg', m.id, m);
-      for (const id of [me.id, d.to]) this.sendTo(id, { type: 'msg', m });
+      this.deliverMessage(m);
     });
     const gone = () => {
       const s = this.online.get(me.id); if (!s) return; s.delete(ws);

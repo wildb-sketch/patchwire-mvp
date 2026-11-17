@@ -39,7 +39,7 @@ A host never loses the room by accident. Leaving as host asks you to hand the ro
 ## Voice rooms
 Rooms tab: start a room (you become host and speaker) or join one as a listener. Listeners raise a hand, the host taps Invite or Accept to bring them on stage. Up to 8 people per room.
 Voice runs peer-to-peer (WebRTC) and uses your browser microphone, which needs HTTPS or localhost. Rooms live in server memory and disappear on restart.
-Some strict networks (corporate Wi-Fi, some mobile carriers) block peer-to-peer audio. For production add a TURN server (for example Twilio or Cloudflare) to the `ICE` list in `public/index.html`, or move to an SFU such as LiveKit for bigger rooms.
+Some strict networks (corporate Wi-Fi, some mobile carriers) block peer-to-peer audio. The backend supplies short-lived TURN credentials; see [Cloudflare TURN setup](cloudflare/TURN.md). Larger rooms may eventually need an SFU such as LiveKit.
 
 ## Optional: translation and corrections
 ```
@@ -59,8 +59,12 @@ Other hosts work too: the included `Dockerfile` runs on Fly.io, Railway and simi
 If two people cannot hear each other on some networks, add a TURN server from a provider such as Cloudflare, Metered or Twilio. Set `TURN_URL` (comma-separated), `TURN_USER` and `TURN_PASS` as environment variables. No code change needed.
 
 ## Invite links
-In a voice room tap Invite to copy a link like `https://yourapp/#room=1a2b3c4d`. Whoever opens it signs in (or signs up) and lands directly in the room. If the room has ended they see "That room has ended".
+In a voice room tap Invite to copy a link like `https://yourapp/room/1a2b3c4d`, or invite a friend directly. A destination survives sign-in and opens the room as a listener. Installed Android apps support verified HTTPS links; browsers provide the fallback. Existing host-switch confirmations and room access rules still apply.
+
+## Android push notifications
+
+Text/voice direct messages and explicit room invitations use Firebase Cloud Messaging. See [push and links setup](mobile/PUSH-AND-LINKS.md) for the private Worker credential, stable APK signing and phone validation. Browser/PWA push is not included.
 
 ## Known MVP limits
-JSON-file storage (swap for Postgres before real scale), single server instance, no email verification or password reset, no push notifications.
+JSON-file storage on the Node backend (Cloudflare uses Durable Object storage), single server instance, no email verification or password reset.
 Voice rooms are not recorded and have no speaking indicator yet. Moments still shows sample content.

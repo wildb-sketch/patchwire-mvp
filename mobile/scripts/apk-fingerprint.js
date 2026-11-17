@@ -1,0 +1,13 @@
+const fs = require('node:fs'), path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
+if (!sdk) throw Error('Android SDK path is required');
+const tools = path.join(sdk, 'build-tools');
+const version = fs.readdirSync(tools).filter(v => fs.existsSync(path.join(tools, v, 'apksigner'))).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
+const apk = path.join(__dirname, '../android/app/build/outputs/apk/debug/app-debug.apk');
+const report = execFileSync(path.join(tools, version, 'apksigner'), ['verify', '--print-certs', apk], { encoding: 'utf8' });
+const hash = /certificate SHA-256 digest:\s*([a-f0-9]{64})/i.exec(report)?.[1];
+if (!hash) throw Error('APK signing certificate unavailable');
+const fingerprint = hash.toUpperCase().match(/../g).join(':');
+fs.writeFileSync(path.join(path.dirname(apk), 'app-link-fingerprint.txt'), fingerprint + '\n');
+console.log('APK certificate SHA-256: ' + fingerprint);

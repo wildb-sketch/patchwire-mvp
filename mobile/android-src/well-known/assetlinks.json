@@ -1,10 +1,14 @@
-[{
-  "relation": ["delegate_permission/common.handle_all_urls"],
-  "target": {
-    "namespace": "android_app",
-    "package_name": "com.patchwire.app",
-    "sha256_cert_fingerprints": [
-      "REPLACE_WITH_YOUR_SHA256_FINGERPRINT"
-    ]
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.patchwire.app",
+      "sha256_cert_fingerprints": [
+        "2D:6F:D1:A4:05:CF:B6:D7:8F:1C:51:0F:D5:E0:AC:3F:F2:C3:95:42:DF:65:7E:B5:E8:FA:AA:3E:E8:3A:32:67"
+      ]
+    }
   }
-}]
+]
