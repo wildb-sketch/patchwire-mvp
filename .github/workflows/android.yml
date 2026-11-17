@@ -35,6 +35,12 @@ jobs:
         run: npm ci --prefix ..
       - name: Verify voice room lifecycle
         run: node --test ../tests/*.test.js
+      - name: Install WebRTC test browser
+        working-directory: .
+        run: npx playwright install --with-deps chromium
+      - name: Verify real WebRTC negotiation and recovery
+        working-directory: .
+        run: npm run test:webrtc
       - run: npm run apk
       - name: Lint Android integration
         run: cd android && ./gradlew lintDebug

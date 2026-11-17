@@ -5,6 +5,11 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Intent;
 import android.net.Uri;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkRequest;
+import android.net.NetworkCapabilities;
+import android.content.Context;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -31,7 +36,38 @@ public class RoomPlugin extends Plugin {
     private boolean destroyed = false;
     private static WeakReference<RoomPlugin> current = new WeakReference<>(null);
 
-    @Override public void load() { current = new WeakReference<>(this); }
+    private ConnectivityManager connectivity;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private final Handler networkHandler = new Handler(Looper.getMainLooper());
+    private final Runnable networkChanged = () -> {
+        if (!destroyed && current.get() == this) command("networkChanged", false);
+    };
+
+    @Override public void load() {
+        current = new WeakReference<>(this);
+        connectivity = (ConnectivityManager) getContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (connectivity == null) return;
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            private Network previous;
+            private boolean seen;
+            private void changed() {
+                networkHandler.removeCallbacks(networkChanged);
+                networkHandler.postDelayed(networkChanged, 700);
+            }
+            @Override public void onAvailable(Network network) {
+                if (seen && !network.equals(previous)) changed();
+                previous = network; seen = true;
+            }
+            @Override public void onLost(Network network) {
+                if (network.equals(previous)) { previous = null; changed(); }
+            }
+        };
+        try {
+            if (Build.VERSION.SDK_INT >= 24) connectivity.registerDefaultNetworkCallback(networkCallback);
+            else connectivity.registerNetworkCallback(new NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), networkCallback);
+        } catch (RuntimeException ignored) { networkCallback = null; }
+    }
 
     static boolean command(String action, boolean muted) {
         RoomPlugin plugin = current.get();
@@ -172,6 +208,11 @@ public class RoomPlugin extends Plugin {
 
     @Override protected void handleOnDestroy() {
         destroyed = true;
+        networkHandler.removeCallbacksAndMessages(null);
+        if (connectivity != null && networkCallback != null) {
+            try { connectivity.unregisterNetworkCallback(networkCallback); }
+            catch (RuntimeException ignored) { /* Already released by Android. */ }
+        }
         if (current.get() == this) {
             current.clear();
             // A replaced Activity must not dismiss the new Activity's room service.
