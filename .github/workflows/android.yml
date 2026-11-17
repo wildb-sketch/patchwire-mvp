@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -35,6 +35,11 @@ jobs:
         run: npm ci --prefix ..
       - name: Verify voice room lifecycle
         run: node --test ../tests/*.test.js
+      - name: Install Cloudflare test runtime
+        run: npm ci --prefix ../cloudflare
+      - name: Verify TURN in the actual Workers runtime
+        working-directory: .
+        run: npm run test:worker
       - name: Install WebRTC test browser
         working-directory: .
         run: npx playwright install --with-deps chromium

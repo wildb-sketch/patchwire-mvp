@@ -166,7 +166,7 @@ export class Hub extends DurableObject {
       const headers = { 'Cache-Control': 'no-store' };
       if (this.limited(me.id, 'ice', 30, 60000)) return json(429, { error: 'Please wait before retrying voice.' }, { ...headers, 'Retry-After': '60' });
       try { return json(200, await this.turn.ice(me.id), headers); }
-      catch { return json(503, { error: 'Voice relay is temporarily unavailable. Please retry.' }, { ...headers, 'Retry-After': '5' }); }
+      catch (error) { return json(503, turn.relayFailure(error), { ...headers, 'Retry-After': '5' }); }
     }
     if (route === 'PUT /api/me/photo') {
       const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+\/=]+)$/.exec(String(b.data || ''));
