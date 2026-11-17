@@ -17,8 +17,13 @@
     });
     return p.chain;
   }
+  function audioTransceiver(pc) {
+    const audio = pc.getTransceivers().filter(t => !t.stopped && t.receiver?.track?.kind === 'audio');
+    // Rollback can leave an unassociated local transceiver before the negotiated one.
+    return audio.find(t => typeof t.mid === 'string') || audio[0];
+  }
   async function attach(p) {
-    const sender = p.pc.getTransceivers().find(t => t.receiver?.track?.kind === 'audio')?.sender;
+    const sender = audioTransceiver(p.pc)?.sender;
     if (sender) await sender.replaceTrack(options.getTrack() || null);
   }
   function clearTimer(p) { if (p.timer) cancel(p.timer); p.timer = null; }
@@ -119,7 +124,8 @@
         if (!alive(p)) return;
         ufrags(description).forEach(value => p.ignoredUfrags.delete(value));
         if (description.type === 'offer') {
-          const transceiver = pc.getTransceivers()[0]; if (transceiver) transceiver.direction = 'sendrecv';
+          const transceiver = audioTransceiver(pc);
+          for (const t of pc.getTransceivers()) if (!t.stopped && t.receiver?.track?.kind === 'audio') t.direction = t === transceiver ? 'sendrecv' : 'inactive';
           await attach(p);
           await pc.setLocalDescription(await pc.createAnswer());
           if (!alive(p)) return;

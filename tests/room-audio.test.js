@@ -109,3 +109,10 @@ test('a connected event from the old media path cannot cancel an unanswered rest
  assert.equal(p.pc.signalingState,'have-local-offer');assert.equal(p.recovering,true);assert.equal(f.timers.size,1);
  await f.fire();assert.equal(p.attempts,2);
 });
+
+test('rollback leftovers cannot steal the microphone from the negotiated audio sender',async()=>{
+ const f=fixture(),p=f.audio.connect('b');const orphan={mid:null,receiver:{track:{kind:'audio'}},sender:{track:null,replaceTrack:async t=>{orphan.sender.track=t}}};
+ const active={mid:'0',receiver:{track:{kind:'audio'}},sender:{track:null,replaceTrack:async t=>{active.sender.track=t}}};
+ p.pc.getTransceivers=()=>[orphan,active];await f.audio.receive('b',{s:{type:'offer',sdp:'a=ice-ufrag:new\r\n'}});
+ assert.equal(active.sender.track,f.track);assert.equal(active.direction,'sendrecv');assert.equal(orphan.sender.track,null);assert.equal(orphan.direction,'inactive');
+});
