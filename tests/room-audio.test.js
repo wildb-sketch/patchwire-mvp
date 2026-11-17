@@ -94,3 +94,11 @@ test('rollback may reuse ICE credentials: buffered candidates for the accepted a
  await f.audio.receive('b',{s:{type:'answer',sdp:'a=ice-ufrag:reused\r\n'},answerTo:id});
  assert.equal(p.pc.candidates.length,1);assert.equal(p.ignoreOffer,false);
 });
+
+test('leaving during asynchronous SDP setup cannot send an old room offer',async()=>{
+ const f=fixture(),p=f.audio.connect('b');let finish,started=false;
+ const original=p.pc.setLocalDescription.bind(p.pc);
+ p.pc.setLocalDescription=async s=>{await original(s);started=true;await new Promise(resolve=>{finish=resolve})};
+ f.audio.recoverAll();while(!started)await tick();f.audio.remove('b');finish();await f.settle();
+ assert.equal(f.sent.length,0);assert.equal(f.timers.size,0);
+});

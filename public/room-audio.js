@@ -42,6 +42,7 @@
       const description = await p.pc.createOffer(restart ? { iceRestart: true } : undefined);
       if (!alive(p)) return;
       await p.pc.setLocalDescription(description);
+      if (!alive(p)) return;
       p.offerId = `${options.selfId()}:${instance}:${++serial}`;
       p.offerNeeded = !options.send(p.uid, { s: p.pc.localDescription, offerId: p.offerId });
       // Covers lost SDP, a peer that never answers, and failed initial ICE (not just later failures).
@@ -115,11 +116,13 @@
         if (collision && pc.signalingState === 'have-local-offer') await pc.setLocalDescription({ type: 'rollback' });
         // Keep the RTCPeerConnection and sender: an ICE restart is a renegotiation, not a new room.
         await pc.setRemoteDescription(description);
+        if (!alive(p)) return;
         ufrags(description).forEach(value => p.ignoredUfrags.delete(value));
         if (description.type === 'offer') {
           const transceiver = pc.getTransceivers()[0]; if (transceiver) transceiver.direction = 'sendrecv';
           await attach(p);
           await pc.setLocalDescription(await pc.createAnswer());
+          if (!alive(p)) return;
           if (!options.send(uid, { s: pc.localDescription, answerTo: data.offerId })) p.offerNeeded = true;
           // The receiving peer also needs a watchdog if this path never connects.
           if (!connected(pc)) schedule(p, 8000, () => recover(uid, 'timeout'));
