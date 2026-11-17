@@ -15,7 +15,10 @@ class_name = "Hub"
 tag = "v1"
 new_sqlite_classes = ["Hub"]
 
-# Optional settings. Secrets (ANTHROPIC_API_KEY, TURN_PASS) are set with `npx wrangler secret put`.
+# Optional settings. See TURN.md. Keep TURN_KEY_ID and TURN_KEY_API_TOKEN in Worker secrets.
+# npx wrangler secret put TURN_KEY_ID
+# npx wrangler secret put TURN_KEY_API_TOKEN
+# Other secrets: ANTHROPIC_API_KEY, or TURN_PASS for an existing static TURN provider.
 [vars]
 # ROOM_GRACE_MS = "45000"
 # TURN_URL = "turn:your-turn-host:3478,turns:your-turn-host:5349"

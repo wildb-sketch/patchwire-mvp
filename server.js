@@ -1,5 +1,6 @@
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { WebSocketServer } = require('ws');
+const turn = require('./lib/turn').createTurnService(process.env);
 const PORT = process.env.PORT || 3000;
 const FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 const VOICE_DIR = process.env.VOICE_DIR || path.join(path.dirname(FILE), 'voice');
@@ -97,9 +98,10 @@ async function api(req, res, url) {
   }
   if (route === 'POST /api/logout') { delete D.sessions[tok]; save(); return send(res, 200, {}); }
   if (route === 'GET /api/ice') {
-    const ice = [{ urls: 'stun:stun.l.google.com:19302' }];
-    if (process.env.TURN_URL) ice.push({ urls: process.env.TURN_URL.split(','), username: process.env.TURN_USER, credential: process.env.TURN_PASS });
-    return send(res, 200, ice);
+    res.setHeader('Cache-Control', 'no-store');
+    if (limited(me.id, 'ice', 30, 60000)) { res.setHeader('Retry-After', '60'); return send(res, 429, { error: 'Please wait before retrying voice.' }); }
+    try { return send(res, 200, await turn.ice(me.id)); }
+    catch { res.setHeader('Retry-After', '5'); return send(res, 503, { error: 'Voice relay is temporarily unavailable. Please retry.' }); }
   }
   if (route === 'PUT /api/me/photo') {
     const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+\/=]+)$/.exec(String(b.data || ''));
@@ -220,7 +222,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': ST[url.pathname][0], 'Cache-Control': ['/sw.js','/room-audio.js','/room-heartbeat.js'].includes(url.pathname) ? 'no-cache' : 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff' });
       return res.end(fs.readFileSync(path.join(__dirname, 'public', ST[url.pathname][1])));
     }
-    if (url.pathname === '/healthz') { res.writeHead(200, { 'X-Voice-Relay': process.env.TURN_URL ? 'configured' : 'missing' }); return res.end('ok'); }
+    if (url.pathname === '/healthz') { res.writeHead(200, { 'X-Voice-Relay': turn.status, 'X-Voice-Relay-Provider': turn.provider, 'Cache-Control': 'no-store' }); return res.end('ok'); }
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
     const PG = { '/': 'index.html', '/index.html': 'index.html', '/neon': 'neon.html' };
     if (PG[url.pathname]) {

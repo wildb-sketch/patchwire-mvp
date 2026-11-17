@@ -651,11 +651,12 @@ R.peers=audio.peers;
 const drop=u=>audio.remove(u);
 const conn=(u,off)=>audio.connect(u,off);
 const onSignal=(from,data)=>audio.receive(from,data);
-let iceRequest=null;
+let iceRequest=null,iceLoadedAt=0;
 async function loadIce(){
+ if(iceLoadedAt&&Date.now()-iceLoadedAt<60000)return ICE;
  if(iceRequest)return iceRequest;
  iceRequest=(async()=>{const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),5000);
-  try{const r=await fetch('/api/ice',{headers:{Authorization:'Bearer '+S.tok},signal:controller.signal});if(r.ok){const list=await r.json();if(Array.isArray(list)&&list.length)ICE=list}}catch(e){}finally{clearTimeout(timeout)}return ICE;
+  try{const r=await fetch('/api/ice',{headers:{Authorization:'Bearer '+S.tok},signal:controller.signal});if(r.ok){const list=await r.json();if(Array.isArray(list)&&list.length){ICE=list;iceLoadedAt=Date.now()}}}catch(e){}finally{clearTimeout(timeout)}return ICE;
  })().finally(()=>{iceRequest=null});return iceRequest;
 }
 let networkTimer=0;

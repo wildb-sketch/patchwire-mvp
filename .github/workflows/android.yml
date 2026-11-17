@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['mobile/**', 'public/**', 'tests/**', 'server.js', 'cloudflare/src/**', '.github/workflows/android.yml']
+    paths: ['mobile/**', 'public/**', 'tests/**', 'lib/**', 'server.js', 'cloudflare/src/**', '.github/workflows/android.yml']
   pull_request:
-    paths: ['mobile/**', 'public/**', 'tests/**', 'server.js', 'cloudflare/src/**', '.github/workflows/android.yml']
+    paths: ['mobile/**', 'public/**', 'tests/**', 'lib/**', 'server.js', 'cloudflare/src/**', '.github/workflows/android.yml']
 jobs:
   apk:
     runs-on: ubuntu-latest
