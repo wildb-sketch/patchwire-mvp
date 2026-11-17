@@ -33,7 +33,7 @@ function harness(file, { android = true, capture = async () => stream(), native 
  vm.runInContext(html.slice(start, end), context);
  vm.runInContext(html.match(/^function setMute\(v\).*$/m)[0], context);
  vm.runInContext(html.match(/^let pendingRoomExit=null;\nfunction doLeave.*$/m)[0], context);
- const connectCode = html.slice(html.indexOf('let wsHeartbeat='), html.indexOf('async function loadUsers()'));
+ const connectCode = html.slice(html.indexOf('let wsRetryTimer='), html.indexOf('async function loadUsers()'));
  Object.assign(context, {
   WebSocket: class { constructor() { this.readyState = 1; } close() { this.readyState = 3; } },
   location: { protocol: 'https:', host: 'example.test', origin: 'https://example.test' }, ws: null, retry: 0, booted: true,
@@ -42,6 +42,7 @@ function harness(file, { android = true, capture = async () => stream(), native 
   checkInvite() {}, bootRoom() {}, loadFriends() {}, loadFollows() {}, loadUsers() {},
   render() {}, paintOv() {}
  });
+ context.window.createRoomHeartbeat=()=>({start(){},stop(){},message(){}});
  vm.runInContext(connectCode, context);
  return { context, calls, messages, toasts, action: data => listener(data), run: code => vm.runInContext(code, context) };
 }

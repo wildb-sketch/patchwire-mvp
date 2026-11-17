@@ -215,9 +215,9 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': u.photo.type, 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
       return res.end(Buffer.from(u.photo.data, 'base64'));
     }
-    const ST = { '/room-audio.js': ['text/javascript', 'room-audio.js'], '/manifest.webmanifest': ['application/manifest+json', 'manifest.webmanifest'], '/sw.js': ['text/javascript', 'sw.js'], '/icon-192.png': ['image/png', 'icon-192.png'], '/icon-512.png': ['image/png', 'icon-512.png'] };
+    const ST = { '/room-heartbeat.js': ['text/javascript', 'room-heartbeat.js'], '/room-audio.js': ['text/javascript', 'room-audio.js'], '/manifest.webmanifest': ['application/manifest+json', 'manifest.webmanifest'], '/sw.js': ['text/javascript', 'sw.js'], '/icon-192.png': ['image/png', 'icon-192.png'], '/icon-512.png': ['image/png', 'icon-512.png'] };
     if (ST[url.pathname]) {
-      res.writeHead(200, { 'Content-Type': ST[url.pathname][0], 'Cache-Control': ['/sw.js','/room-audio.js'].includes(url.pathname) ? 'no-cache' : 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff' });
+      res.writeHead(200, { 'Content-Type': ST[url.pathname][0], 'Cache-Control': ['/sw.js','/room-audio.js','/room-heartbeat.js'].includes(url.pathname) ? 'no-cache' : 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff' });
       return res.end(fs.readFileSync(path.join(__dirname, 'public', ST[url.pathname][1])));
     }
     if (url.pathname === '/healthz') { res.writeHead(200, { 'X-Voice-Relay': process.env.TURN_URL ? 'configured' : 'missing' }); return res.end('ok'); }

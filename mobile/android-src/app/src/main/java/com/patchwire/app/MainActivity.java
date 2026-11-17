@@ -38,4 +38,26 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    private void keepRoomWebViewRunning() {
+        if (!RoomService.active || getBridge() == null || getBridge().getWebView() == null) return;
+        android.webkit.WebView webView = getBridge().getWebView();
+        if (Build.VERSION.SDK_INT >= 26) {
+            // Do not waive renderer importance simply because another Activity is on top.
+            webView.setRendererPriorityPolicy(android.webkit.WebView.RENDERER_PRIORITY_IMPORTANT, false);
+        }
+        webView.onResume();
+        webView.resumeTimers();
+    }
+
+    @Override public void onPause() {
+        super.onPause();
+        keepRoomWebViewRunning();
+        android.util.Log.i("WhassabiRoom", "Activity paused; room active=" + RoomService.active);
+    }
+
+    @Override public void onStop() {
+        super.onStop();
+        keepRoomWebViewRunning();
+    }
+
 }
