@@ -1,12 +1,29 @@
 name: Build Android APK
 on:
   workflow_dispatch:
+    inputs:
+      verify_turn:
+        description: 'Run a live Cloudflare TURN audio check (creates one diagnostic account)'
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths: ['mobile/**', 'public/**', 'tests/**', 'lib/**', 'server.js', 'cloudflare/src/**', '.github/workflows/android.yml']
   pull_request:
     paths: ['mobile/**', 'public/**', 'tests/**', 'lib/**', 'server.js', 'cloudflare/src/**', '.github/workflows/android.yml']
 jobs:
+  turn:
+    if: github.event_name == 'workflow_dispatch' && inputs.verify_turn
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Verify real audio through Cloudflare relay and TLS port 443
+        run: node scripts/verify-turn.cjs
   apk:
     runs-on: ubuntu-latest
     defaults:
