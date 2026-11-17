@@ -29,7 +29,7 @@ Run `npx wrangler deploy` again after changing anything in `public/` or `src/`.
 
 ## Optional settings
 - Translation: `npx wrangler secret put ANTHROPIC_API_KEY`
-- TURN for strict networks: uncomment the `TURN_*` lines in `wrangler.toml` and run `npx wrangler secret put TURN_PASS`
+- Cloudflare TURN for strict networks: add Worker secrets `TURN_KEY_ID` and `TURN_KEY_API_TOKEN`. See [TURN setup and verification](TURN.md).
 - Seat grace period: `ROOM_GRACE_MS` in `wrangler.toml` (default 45000)
 
 ## Try it on your computer first

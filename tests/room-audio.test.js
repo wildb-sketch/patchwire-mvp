@@ -26,10 +26,18 @@ function fixture(self='a',other='b',coordination=false) {
 test('initial offer attaches the existing muted track before SDP is created',async()=>{
  const f=fixture();const p=f.audio.connect('b',true);await f.settle();assert.equal(p.pc.sender.track,f.track);assert.equal(f.track.enabled,false);assert.equal(f.sent[0].s.type,'offer');assert(f.sent[0].offerId);
 });
+test('new offers and incoming offers refresh expired TURN settings before gathering ICE',async()=>{
+ const f=fixture(),p=f.audio.connect('b',true);await f.settle();
+ assert.equal(f.refreshes,1);assert.equal(p.pc.config.iceServers[0].urls,'turn:configured.example');
+ const answerer=fixture('b','a'),q=answerer.audio.connect('a');
+ await answerer.audio.receive('a',{s:{type:'offer',sdp:'a=ice-ufrag:remote\r\n'}});
+ assert.equal(answerer.refreshes,1);assert.equal(q.pc.config.iceServers[0].urls,'turn:configured.example');
+ assert.equal(q.pc.sender.track,answerer.track);assert.equal(answerer.track.enabled,false);
+});
 test('failed media restarts ICE on the same peer and retains microphone/mute',async()=>{
  const f=fixture(),p=f.audio.connect('b',true);await f.settle();
  p.pc.connectionState='failed';p.pc.onconnectionstatechange();await f.settle();
- assert.equal(f.audio.peers.b,p);assert.equal(p.pc.offers.at(-1).iceRestart,true);assert.equal(p.pc.sender.track,f.track);assert.equal(f.track.enabled,false);assert.equal(f.refreshes,1);
+ assert.equal(f.audio.peers.b,p);assert.equal(p.pc.offers.at(-1).iceRestart,true);assert.equal(p.pc.sender.track,f.track);assert.equal(f.track.enabled,false);assert.equal(f.refreshes,2);
  await f.audio.receive('b',{s:{type:'answer',sdp:'a=ice-ufrag:remote\r\n'},answerTo:f.sent.at(-1).offerId});
  p.pc.connectionState='connected';p.pc.iceConnectionState='completed';p.pc.oniceconnectionstatechange();
  assert.deepEqual(f.statuses,['reconnecting','recovered']);assert.equal(f.timers.size,0);

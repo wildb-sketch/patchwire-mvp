@@ -1,6 +1,7 @@
 // Patchwire on Cloudflare: one Worker serves the site (static assets) and forwards everything else
 // to a single Durable Object ("Hub") that owns accounts, messages, rooms and live WebSockets.
 import { DurableObject } from 'cloudflare:workers';
+import turn from '../../lib/turn.js';
 
 export default {
   async fetch(request, env) {
@@ -33,6 +34,7 @@ export class Hub extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.env = env; this.sql = ctx.storage.sql;
+    this.turn = turn.createTurnService(env);
     this.online = new Map(); this.hits = new Map(); this.rooms = new Map(); this.roomOf = new Map(); this.grace = new Map();
     this.D = { users: {}, sessions: {}, msgs: [], reports: [], friends: [], follows: [], feed: [] };
     ctx.blockConcurrencyWhile(async () => {
@@ -102,7 +104,7 @@ export class Hub extends DurableObject {
         if (!row) return new Response(null, { status: 404 });
         return new Response(bytesOf(row.data), { headers: { 'Content-Type': row.type, 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' } });
       }
-      if (url.pathname === '/healthz') return new Response('ok', { headers: { 'X-Voice-Relay': this.env.TURN_URL ? 'configured' : 'missing' } });
+      if (url.pathname === '/healthz') return new Response('ok', { headers: { 'X-Voice-Relay': this.turn.status, 'X-Voice-Relay-Provider': this.turn.provider, 'Cache-Control': 'no-store' } });
       if (url.pathname.startsWith('/api/')) return await this.api(request, url);
       return new Response('Not found', { status: 404 });
     } catch (e) { return json(500, { error: 'Server error' }); }
@@ -161,9 +163,10 @@ export class Hub extends DurableObject {
     }
     if (route === 'POST /api/logout') { delete D.sessions[tok]; this.del('session', tok); return json(200, {}); }
     if (route === 'GET /api/ice') {
-      const ice = [{ urls: 'stun:stun.l.google.com:19302' }];
-      if (this.env.TURN_URL) ice.push({ urls: String(this.env.TURN_URL).split(','), username: this.env.TURN_USER, credential: this.env.TURN_PASS });
-      return json(200, ice);
+      const headers = { 'Cache-Control': 'no-store' };
+      if (this.limited(me.id, 'ice', 30, 60000)) return json(429, { error: 'Please wait before retrying voice.' }, { ...headers, 'Retry-After': '60' });
+      try { return json(200, await this.turn.ice(me.id), headers); }
+      catch { return json(503, { error: 'Voice relay is temporarily unavailable. Please retry.' }, { ...headers, 'Retry-After': '5' }); }
     }
     if (route === 'PUT /api/me/photo') {
       const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+\/=]+)$/.exec(String(b.data || ''));

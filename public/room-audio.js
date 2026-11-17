@@ -48,7 +48,8 @@
     }
     p.makingOffer = true;
     try {
-      const iceServers = restart && options.refreshIce ? await options.refreshIce() : options.getIce();
+      // Temporary TURN credentials must also be fresh for a new peer, not just a restart.
+      const iceServers = options.refreshIce ? await options.refreshIce() : options.getIce();
       if (!alive(p)) return;
       p.pc.setConfiguration({ iceServers });
       await attach(p);
@@ -142,6 +143,11 @@
         p.ignoreOffer = collision && options.selfId() < uid;
         if (p.ignoreOffer) { ufrags(description).forEach(value => p.ignoredUfrags.add(value)); return; }
         if (collision && pc.signalingState === 'have-local-offer') await pc.setLocalDescription({ type: 'rollback' });
+        if (description.type === 'offer' && options.refreshIce) {
+          const iceServers = await options.refreshIce();
+          if (!alive(p)) return;
+          pc.setConfiguration({ iceServers });
+        }
         // Keep the RTCPeerConnection and sender: an ICE restart is a renegotiation, not a new room.
         await pc.setRemoteDescription(description);
         if (!alive(p)) return;
