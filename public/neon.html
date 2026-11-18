@@ -774,11 +774,12 @@ if(navigator.connection?.addEventListener)navigator.connection.addEventListener(
 // Capacitor's injected nativePromise/addListener API also works on the remotely hosted pages.
 const androidRoom=()=>window.Capacitor&&window.Capacitor.getPlatform()==='android';
 let nativeQueue=Promise.resolve(),nativeListening=false,notificationWarning=false;
-let routeGeneration=0,micRouteSeen=0,micRouteRequested=false,endedRetryAt=0,endedRetries=0,endedRecoveryTimer=0;
+let routeGeneration=0,confirmedRouteGeneration=0,micRouteSeen=0,micRouteRequested=false,endedRetryAt=0,endedRetries=0,endedRecoveryTimer=0;
 function audioRouteChanged(data){
  if(!S.room||!Number.isFinite(data.generation)||data.generation<routeGeneration)return;
  routeGeneration=data.generation;
  if(!data.ready)return;
+ if(data.generation>confirmedRouteGeneration){confirmedRouteGeneration=data.generation;endedRetries=0;endedRetryAt=Date.now()}
  if(data.failed)toast('Headset audio could not connect. Reconnect the headset to retry.',null,{key:'audio-route'});
  if(R.mic&&data.generation>(R.micRoute||0)){clearTimeout(endedRecoveryTimer);endedRecoveryTimer=0;micRouteRequested=true;micFailed=false;syncMic()}
 }

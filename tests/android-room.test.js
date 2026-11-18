@@ -187,6 +187,16 @@ for (const file of ['index.html', 'neon.html']) {
   }
   assert.equal(captures, 3); assert.equal(h.context.R.mic, null); assert.equal(h.context.S.muted, true);
  });
+ test(`${file}: repeated physical headset changes reset recovery without unmuting the user`, async () => {
+  let generation = 1;
+  const h = harness(file, { native: async method => method === 'prepareAudioRoute' ? { managed: true, generation } : {} });
+  h.context.S.muted = true; await h.context.syncMic();
+  for (let change = 0; change < 4; change++) {
+   const old = h.context.R.mic; old.readyState = 'ended'; old.onended();
+   generation++; h.action({ action: 'audioRouteChanged', ready: true, generation }); await h.context.syncMic();
+   assert.notEqual(h.context.R.mic, old); assert.equal(h.context.R.micRoute, generation); assert.equal(h.context.S.muted, true); assert.equal(h.context.R.mic.enabled, false);
+  }
+ });
  test(`${file}: routing cannot retry microphone permission denial or capture for a listener`, async () => {
   let captures = 0; const h = harness(file, { capture: async () => { captures++; throw Object.assign(Error('denied'), { name: 'NotAllowedError' }); } });
   await h.context.syncMic(); h.action({ action: 'audioRouteChanged', ready: true, generation: 1 }); await h.context.syncMic(); assert.equal(captures, 1);
