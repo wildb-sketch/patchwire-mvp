@@ -35,10 +35,14 @@ test('deployed Worker routes persist device leases and dispatch authenticated ro
   const room = (await wait(() => received.find(message => message.type === 'room:joined'))).room;
   assert.equal((await api('/rooms/' + room.id + '/invite', host, { to: guest.me.id })).status, 403);
   assert.equal((await api('/friends/request', host, { id: guest.me.id })).status, 200);
+  const provider = await runtime.getWorker('provider');
+  const friend = await wait(async () => (await (await provider.fetch('https://provider.test/events')).json()).find(event => event.data.kind === 'friend'));
+  assert.equal(friend.data.target, host.me.id); assert.equal(friend.data.recipient, guest.me.id); assert.equal(friend.data.binding, registration.binding);
+  await api('/friends/request', host, { id: guest.me.id });
+  assert.equal((await (await provider.fetch('https://provider.test/events')).json()).length, 1);
   assert.equal((await api('/friends/respond', guest, { id: host.me.id, accept: true })).status, 200);
   assert.equal((await api('/rooms/' + room.id + '/invite', host, { to: guest.me.id })).status, 200);
-  const provider = await runtime.getWorker('provider');
-  const delivered = await wait(async () => { const events = await (await provider.fetch('https://provider.test/events')).json(); return events[0]; });
+  const delivered = await wait(async () => { const events = await (await provider.fetch('https://provider.test/events')).json(); return events.find(event => event.data.kind === 'room'); });
   assert.equal(delivered.data.kind, 'room'); assert.equal(delivered.data.target, room.id);
   assert.equal(delivered.data.recipient, guest.me.id); assert.equal(delivered.data.binding, registration.binding);
   assert.equal(delivered.notification, undefined);
@@ -47,10 +51,10 @@ test('deployed Worker routes persist device leases and dispatch authenticated ro
   for (let i = 1; i <= 3; i++) ws.send(JSON.stringify({ type: 'msg', to: guest.me.id, t: 'Message ' + i }));
   const sequence = await wait(async () => {
    const events = await (await provider.fetch('https://provider.test/events')).json();
-   return events.length === 4 && events;
+   return events.length === 5 && events;
   });
-  assert.equal(new Set(sequence.map(event => event.data.eventId)).size, 4);
-  for (const event of sequence.slice(1)) {
+  assert.equal(new Set(sequence.map(event => event.data.eventId)).size, 5);
+  for (const event of sequence.filter(event => event.data.kind === 'message')) {
    assert.equal(event.data.kind, 'message'); assert.equal(event.data.target, host.me.id);
    assert.equal(event.data.recipient, guest.me.id); assert.equal(event.data.binding, registration.binding);
    assert.equal(event.android.collapse_key, undefined);

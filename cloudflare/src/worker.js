@@ -10,6 +10,8 @@ import security from '../../lib/security.js';
 import backupsLib from '../../lib/backups.js';
 import operations from '../../lib/operations.js';
 import opsApi from '../../lib/ops-api.js';
+import chatsLib from '../../lib/chats.js';
+import files from '../../lib/files.js';
 import { backupSource } from './backup-source.js';
 
 export default {
@@ -51,7 +53,7 @@ export class Hub extends DurableObject {
     this.lifecycle = ctx;
     this.pushSender = push.createFcm(env, { onFailure: result => this.monitor?.record('push', result.code || 0) });
     this.socketSessions = new WeakMap(); this.online = new Map(); this.hits = new Map(); this.rooms = new Map(); this.roomOf = new Map(); this.grace = new Map();
-    this.D = { users: {}, sessions: {}, msgs: [], reports: [], friends: [], follows: [], feed: [], pushDevices: {}, accountTokens: {}, rate: {}, blocks: [], ops: {} };
+    this.D = { users: {}, sessions: {}, msgs: [], reports: [], friends: [], follows: [], feed: [], pushDevices: {}, accountTokens: {}, rate: {}, blocks: [], ops: {}, chats: {}, messageMarks: {} };
     this.push = push.createPushRegistry({ devices: this.D.pushDevices, sender: this.pushSender,
       sessionOwner: session => this.D.sessions[session], put: record => this.put('push', record.id, record), remove: id => this.del('push', id) });
     this.mail = accountsLib.createMailer(env, { onFailure: result => this.monitor?.record('mail', result.status) });
@@ -69,15 +71,17 @@ export class Hub extends DurableObject {
       if (room?.members.has(b)) this.removeMember(room, room.host === a ? b : a, 'You left a room shared with a blocked user.');
       this.pushFr(a, b); this.sendTo(a, { type: 'safety:changed' }); this.sendTo(b, { type: 'safety:changed' }); this.bcastRooms();
     } });
+    this.chats = chatsLib.createChats({ data: this.D, put: (...args) => this.put(...args), remove: (...args) => this.del(...args), changed: uid => this.sendTo(uid, { type: 'chats:changed' }) });
     ctx.blockConcurrencyWhile(async () => {
       this.sql.exec('CREATE TABLE IF NOT EXISTS kv (kind TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY (kind, k))');
       this.sql.exec('CREATE TABLE IF NOT EXISTS photos (uid TEXT PRIMARY KEY, type TEXT, data TEXT)');
       this.sql.exec('CREATE TABLE IF NOT EXISTS voice (id TEXT PRIMARY KEY, data BLOB)');
+      this.sql.exec('CREATE TABLE IF NOT EXISTS files (id TEXT, part INTEGER, data BLOB, PRIMARY KEY(id, part))');
       const D = this.D;
       this.loadState();
       this.monitor = operations.createMonitor({ state: this.D.ops.monitor ||= {}, save: value => this.put('ops', 'monitor', value), log: value => console.warn(JSON.stringify(value)) });
       this.backups = backupsLib.createBackups({ backend: 'worker', bucket: env.BACKUPS, source: backupSource(this), status: this.D.ops.backup ||= {}, saveStatus: value => this.put('ops', 'backup', value), onEvent: (category, status) => this.monitor.record(category, status) });
-      this.operator = opsApi.createOpsApi({ env, monitor: this.monitor, backups: this.backups, reports: () => this.D.reports,
+      this.operator = opsApi.createOpsApi({ env, monitor: this.monitor, backups: this.backups, reports: () => this.D.reports.map(r => ({ ...r, byNick: this.D.users[r.by]?.nick || 'Unknown', whoNick: this.D.users[r.who]?.nick || 'Unknown' })),
         updateReport: (id, status) => { const report = this.D.reports.find(r => r.id === id); if (!report) return false; report.status = status; report.reviewedAt = Date.now(); this.put('report', id, report); return true; } });
       if (env.BACKUPS && (!this.backups.status.lastSuccess || Date.now() - this.backups.status.lastSuccess > 86400000) && (!this.backups.status.lastAttempt || Date.now() - this.backups.status.lastAttempt > 900000)) this.lifecycle.waitUntil(this.runBackup().catch(() => {}));
     });
@@ -86,12 +90,12 @@ export class Hub extends DurableObject {
   loadState(reset = false) {
     const D = this.D;
     if (reset) {
-      for (const field of ['users', 'sessions', 'pushDevices', 'accountTokens', 'rate']) for (const key of Object.keys(D[field])) delete D[field][key];
+      for (const field of ['users', 'sessions', 'pushDevices', 'accountTokens', 'rate', 'chats', 'messageMarks']) for (const key of Object.keys(D[field])) delete D[field][key];
       for (const field of ['msgs', 'reports', 'friends', 'follows', 'feed', 'blocks']) D[field].length = 0;
     }
     for (const row of this.sql.exec('SELECT kind, k, v FROM kv')) {
       const value = JSON.parse(row.v);
-      const maps = { user: 'users', session: 'sessions', push: 'pushDevices', accountToken: 'accountTokens', rate: 'rate' };
+      const maps = { user: 'users', session: 'sessions', push: 'pushDevices', accountToken: 'accountTokens', rate: 'rate', chat: 'chats', messageMark: 'messageMarks' };
       const arrays = { msg: 'msgs', report: 'reports', friend: 'friends', follow: 'follows', feed: 'feed', block: 'blocks' };
       if (maps[row.kind]) D[maps[row.kind]][row.k] = value;
       else if (arrays[row.kind]) { if (row.kind === 'report' && !value.id) value.id = row.k; D[arrays[row.kind]].push(value); }
@@ -100,6 +104,23 @@ export class Hub extends DurableObject {
     D.msgs.sort((a, b) => a.ts - b.ts); D.feed.sort((a, b) => a.ts - b.ts);
   }
   async runBackup() { return this.backups.run(); }
+  async uploadFile(request, url) {
+    const session = (request.headers.get('Authorization') || '').replace('Bearer ', ''), user = this.authUser(session);
+    if (!user) return json(401, { error: 'Please log in' });
+    const to = clean(url.searchParams.get('to'), 20);
+    files.fileRecipient(this.D, user.id, to, this.safety, (a, b) => this.areFriends(a, b));
+    if (this.limited(user.id, 'files', 10, 60000)) return json(429, { error: 'Too many files. Try again shortly.' });
+    const bytes = await files.readFileBody(request.body, request.headers.get('Content-Length'));
+    if (this.authUser(session) !== user) return json(401, { error: 'Please log in' });
+    files.fileRecipient(this.D, user.id, to, this.safety, (a, b) => this.areFriends(a, b), bytes.byteLength);
+    const id = hex(6), name = files.fileName(url.searchParams.get('name'));
+    const message = { id, from: user.id, to, kind: 'file', name, size: bytes.byteLength, t: '📎 ' + name, ts: Date.now() };
+    this.lifecycle.storage.transactionSync(() => {
+      files.fileChunks(bytes).forEach((chunk, part) => this.sql.exec('INSERT INTO files VALUES (?, ?, ?)', id, part, chunk.buffer));
+      this.put('msg', id, message);
+    });
+    this.deliverMessage(message); return json(200, { m: message });
+  }
 
   // ---------- persistence (write-through) ----------
   put(kind, k, o) { this.sql.exec('INSERT OR REPLACE INTO kv (kind, k, v) VALUES (?, ?, ?)', kind, k, JSON.stringify(o)); }
@@ -170,6 +191,7 @@ export class Hub extends DurableObject {
 
   async api(request, url) {
     const D = this.D, route = request.method + ' ' + url.pathname;
+    if (route === 'POST /api/files') return this.uploadFile(request, url);
     let b = {};
     if (request.method !== 'GET') {
       const max = url.pathname === '/api/me/photo' ? 300000 : url.pathname === '/api/voice' ? 700000 : 20000;
@@ -211,6 +233,22 @@ export class Hub extends DurableObject {
     const tok = (request.headers.get('authorization') || '').replace('Bearer ', ''), me = this.authUser(tok);
     if (!me) return json(401, { error: 'Please log in' });
     me.ts = Date.now();
+    if (route === 'GET /api/chats') return json(200, this.chats.snapshot(me.id));
+    const chatAction = /^\/api\/chats\/([a-f0-9]{12})$/.exec(url.pathname);
+    const messageMark = /^\/api\/messages\/([a-f0-9]{12})\/mark$/.exec(url.pathname);
+    if (request.method === 'POST' && (chatAction || messageMark)) {
+      if (this.limited(me.id, 'chatActions', 60, 60000)) return json(429, { error: 'Too many changes. Try again shortly.' });
+      if (chatAction) this.chats.chat(me.id, chatAction[1], b.action); else this.chats.mark(me.id, messageMark[1], b);
+      return json(200, {});
+    }
+    const fileDownload = /^\/api\/files\/([a-f0-9]{12})$/.exec(url.pathname);
+    if (request.method === 'GET' && fileDownload) {
+      const message = D.msgs.find(m => m.id === fileDownload[1] && m.kind === 'file');
+      if (!message || !this.chats.visible(me.id, message)) return json(404, { error: 'File is no longer available' });
+      const chunks = this.sql.exec('SELECT data FROM files WHERE id = ? ORDER BY part', message.id).toArray();
+      if (chunks.reduce((size, row) => size + row.data.byteLength, 0) !== message.size) return json(404, { error: 'File is no longer available' });
+      return new Response(new ReadableStream({ start(controller) { for (const row of chunks) controller.enqueue(new Uint8Array(row.data)); controller.close(); } }), { headers: files.downloadHeaders(message.name, message.size) });
+    }
     if (route === 'POST /api/room/leave') {
       const room = this.rooms.get(this.roomOf.get(me.id)), member = room?.members.get(me.id);
       if (room && room.id === b.roomId && typeof b.leaveToken === 'string' &&
@@ -298,7 +336,7 @@ export class Hub extends DurableObject {
     }
     if (request.method === 'GET' && url.pathname.startsWith('/api/voice/')) {
       const id = url.pathname.slice(11).replace(/[^a-f0-9]/g, ''), m = D.msgs.find(x => x.id === id && x.kind === 'voice');
-      if (!m || (m.from !== me.id && m.to !== me.id)) return json(404, { error: 'Not found' });
+      if (!m || !this.chats.visible(me.id, m)) return json(404, { error: 'Not found' });
       const row = this.sql.exec('SELECT data FROM voice WHERE id = ?', id).toArray()[0];
       if (!row) return json(404, { error: 'Audio is no longer available' });
       return new Response(row.data, { headers: { 'Content-Type': m.mime, 'Cache-Control': 'private, max-age=86400' } });
@@ -338,6 +376,7 @@ export class Hub extends DurableObject {
       }
       if (this.limited(me.id, 'fr', 30, 3600e3)) return json(429, { error: 'Too many requests. Try again later' });
       const nf = { a: me.id, b: t.id, status: 'pending', by: me.id, ts: Date.now() }; D.friends.push(nf); this.put('friend', nf.a + ':' + nf.b, nf); this.pushFr(me.id, t.id);
+      this.lifecycle.waitUntil(this.push.notify(t.id, { kind: 'friend', target: me.id, id: hex(6) }).catch(() => {}));
       return json(200, { status: 'pending' });
     }
     if (route === 'POST /api/friends/respond') {
@@ -352,7 +391,7 @@ export class Hub extends DurableObject {
       return json(200, {});
     }
     if (route === 'GET /api/users') return json(200, Object.values(D.users).filter(u => u.id !== me.id && !this.safety.blocked(me.id, u.id)).map(u => ({ ...this.pub(u), on: this.online.has(u.id) })));
-    if (route === 'GET /api/messages') return json(200, D.msgs.filter(m => m.from === me.id || m.to === me.id).slice(-500));
+    if (route === 'GET /api/messages') return json(200, D.msgs.filter(m => this.chats.visible(me.id, m)).slice(-500));
     if (route === 'POST /api/report') {
       if (this.limited(me.id, 'reports', 10, 3600000)) return json(429, { error: 'Too many reports. Try again later.' });
       return json(200, { id: this.safety.report(me.id, b) });

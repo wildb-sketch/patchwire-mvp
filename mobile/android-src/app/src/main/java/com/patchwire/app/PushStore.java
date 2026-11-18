@@ -25,8 +25,8 @@ final class PushStore {
     static SharedPreferences prefs(Context c) { return c.getSharedPreferences("whassabi_push", Context.MODE_PRIVATE); }
     static void channel(Context c) {
         if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel channel = new NotificationChannel(CHANNEL, "Messages and invitations", NotificationManager.IMPORTANCE_DEFAULT);
-            channel.setDescription("Private messages and room invitations");
+            NotificationChannel channel = new NotificationChannel(CHANNEL, "Messages and requests", NotificationManager.IMPORTANCE_DEFAULT);
+            channel.setDescription("Private messages, friend requests and room invitations");
             c.getSystemService(NotificationManager.class).createNotificationChannel(channel);
         }
     }
@@ -74,7 +74,7 @@ final class PushStore {
         Set<String> tags = new HashSet<>(p.getStringSet("tags", new HashSet<>()));
         tags.add(tag); p.edit().putStringSet("tags", tags).apply();
     }
-    static synchronized void post(Context c, String uid, String binding, String tag, String event, boolean room, NotificationCompat.Builder notification) {
+    static synchronized void post(Context c, String uid, String binding, String tag, String event, String kind, NotificationCompat.Builder notification) {
         if (!matches(c, uid, binding) || visible || !enabled(c)) return;
         if (seen(c, event)) return;
         SharedPreferences p = prefs(c);
@@ -82,7 +82,7 @@ final class PushStore {
         try { counts = new JSONObject(p.getString("counts", "{}")); }
         catch (Exception ignored) { counts = new JSONObject(); }
         int count = Math.min(999, counts.optInt(tag, 0) + 1);
-        notification.setNumber(count).setContentText(room ? (count == 1 ? "You have a room invitation" : "You have " + count + " room invitations") :
+        notification.setNumber(count).setContentText("friend".equals(kind) ? "You have a new friend request" : "room".equals(kind) ? (count == 1 ? "You have a room invitation" : "You have " + count + " room invitations") :
             (count == 1 ? "You have a new private message" : "You have " + count + " new private messages"));
         try {
             NotificationManagerCompat.from(c).notify(tag, NOTIFICATION, notification.build());

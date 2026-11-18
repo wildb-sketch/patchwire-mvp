@@ -12,6 +12,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(RoomPlugin.class);
         registerPlugin(PushPlugin.class);
         registerPlugin(NavigationPlugin.class);
+        registerPlugin(FilesPlugin.class);
         super.onCreate(savedInstanceState);
         handleIntent(getIntent());
     }

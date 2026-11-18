@@ -46,8 +46,11 @@ public class PushNotificationTest {
     }
     private void receive(int event) { receive(event, UID, BINDING); }
     private void receive(int event, String uid, String binding) {
+        receive(event, uid, binding, "message");
+    }
+    private void receive(int event, String uid, String binding, String kind) {
         Map<String, String> data = new HashMap<>();
-        data.put("kind", "message"); data.put("target", PEER);
+        data.put("kind", kind); data.put("target", PEER);
         data.put("recipient", uid); data.put("binding", binding);
         data.put("eventId", String.format("%012x", event));
         service.onMessageReceived(new RemoteMessage.Builder("fixture").setMessageId("transport-" + event).setData(data).build());
@@ -115,5 +118,17 @@ public class PushNotificationTest {
         receive(1); assertNull(social());
         Shadows.shadowOf(manager).setNotificationsEnabled(true);
         receive(2); assertEquals(1, social().getNotification().number);
+    }
+    @Test public void friendRequestsOpenTheRequestersProfileAndRemainBoundToTheReceivingAccount() {
+        receive(1, UID, BINDING, "friend");
+        Notification notification = social().getNotification();
+        assertEquals("You have a new friend request", notification.extras.getString(Notification.EXTRA_TEXT));
+        android.content.Intent intent = Shadows.shadowOf(notification.contentIntent).getSavedIntent();
+        assertEquals("profile", intent.getStringExtra("kind")); assertEquals(PEER, intent.getStringExtra("target"));
+        assertEquals(UID, intent.getStringExtra("recipient")); assertEquals(BINDING, intent.getStringExtra("binding"));
+        String tag = social().getTag(); manager.cancel(tag, PushStore.NOTIFICATION);
+        receive(1, UID, BINDING, "friend"); assertNull(social());
+        receive(2, UID, BINDING, "friend"); assertNotNull(social());
+        bind("cccccccccccc", "next-binding"); receive(3, UID, BINDING, "friend"); assertNull(social());
     }
 }

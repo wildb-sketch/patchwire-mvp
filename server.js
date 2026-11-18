@@ -11,16 +11,20 @@ const { createMonitor } = require('./lib/operations');
 const { createBackups } = require('./lib/backups');
 const { fileBucket, nodeSource } = require('./lib/node-backups');
 const { createOpsApi } = require('./lib/ops-api');
+const { createChats } = require('./lib/chats');
+const files = require('./lib/files');
 const pushSender = createFcm(process.env, { onFailure: result => monitor.record('push', result.code || 0) });
 const PORT = process.env.PORT || 3000;
 const FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 const VOICE_DIR = process.env.VOICE_DIR || path.join(path.dirname(FILE), 'voice');
+const FILE_DIR = path.join(VOICE_DIR, 'files');
+fs.mkdirSync(FILE_DIR, { recursive: true });
 try { fs.mkdirSync(VOICE_DIR, { recursive: true }); } catch {}
 const KEY = process.env.ANTHROPIC_API_KEY, MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5-5';
 const LANGS = ['English', 'Turkish', 'Spanish', 'Japanese', 'Korean', 'Portuguese', 'French', 'German'];
 const LV = ['Beginner', 'Intermediate', 'Advanced'];
 
-let D = { users: {}, sessions: {}, msgs: [], reports: [], friends: [], follows: [], feed: [], pushDevices: {}, accountTokens: {}, rate: {}, blocks: [], ops: {} };
+let D = { users: {}, sessions: {}, msgs: [], reports: [], friends: [], follows: [], feed: [], pushDevices: {}, accountTokens: {}, rate: {}, blocks: [], ops: {}, chats: {}, messageMarks: {} };
 let missingData = false;
 try { const stored = JSON.parse(fs.readFileSync(FILE, 'utf8')); if (!stored || typeof stored !== 'object' || Array.isArray(stored) || !stored.users || !Array.isArray(stored.msgs)) throw Error('Invalid data'); D = { ...D, ...stored }; }
 catch (error) { if (error.code === 'ENOENT') missingData = true; else throw Error('Stored data cannot be loaded. Recover a backup before starting this server.'); }
@@ -34,7 +38,7 @@ const durableSave = () => { clearTimeout(timer); flush(); };
 D.ops ||= {};
 const monitor = createMonitor({ state: D.ops.monitor ||= {}, save: save, log: value => console.warn(JSON.stringify(value)) });
 const backups = createBackups({ bucket: fileBucket(backupDirectory), source: nodeSource(D, VOICE_DIR), status: D.ops.backup ||= {}, saveStatus: save, onEvent: (category, status) => monitor.record(category, status) });
-const operator = createOpsApi({ env: process.env, monitor, backups, reports: () => D.reports.map(r => ({ ...r, id: r.id || r.ts + ':' + r.by })), updateReport: (id, status) => { const item = D.reports.find(r => (r.id || r.ts + ':' + r.by) === id); if (!item) return false; item.status = status; item.reviewedAt = Date.now(); durableSave(); return true; } });
+const operator = createOpsApi({ env: process.env, monitor, backups, reports: () => D.reports.map(r => ({ ...r, id: r.id || r.ts + ':' + r.by, byNick: D.users[r.by]?.nick || 'Unknown', whoNick: D.users[r.who]?.nick || 'Unknown' })), updateReport: (id, status) => { const item = D.reports.find(r => (r.id || r.ts + ':' + r.by) === id); if (!item) return false; item.status = status; item.reviewedAt = Date.now(); durableSave(); return true; } });
 const pushRegistry = createPushRegistry({ devices: D.pushDevices, sender: pushSender, sessionOwner: session => D.sessions[session], put: save, remove: save });
 function deliverMessage(message, kind = 'message', target = message.from) {
   D.msgs.push(message); save();
@@ -101,11 +105,27 @@ const safety = createSafety({ data: D, areFriends, put: durableSave, remove: sav
   if (room?.members.has(b)) removeMember(room, room.host === a ? b : a, 'You left a room shared with a blocked user.');
   pushFr(a, b); sendTo(a, { type: 'safety:changed' }); sendTo(b, { type: 'safety:changed' }); bcastRooms();
 } });
+const chats = createChats({ data: D, put: durableSave, remove: save, changed: uid => sendTo(uid, { type: 'chats:changed' }) });
 
 async function api(req, res, url) {
   const route = req.method + ' ' + url.pathname;
-  const b = req.method === 'GET' ? {} : await readBody(req, url.pathname === '/api/me/photo' ? 300000 : url.pathname === '/api/voice' ? 700000 : 20000);
   res.setHeader('Cache-Control', 'no-store');
+  if (route === 'POST /api/files') {
+    const session = (req.headers.authorization || '').replace('Bearer ', ''), user = authUser(session);
+    if (!user) return send(res, 401, { error: 'Please log in' });
+    const to = clean(url.searchParams.get('to'), 20);
+    files.fileRecipient(D, user.id, to, safety, areFriends);
+    if (limited(user.id, 'files', 10, 60000)) return send(res, 429, { error: 'Too many files. Try again shortly.' });
+    const bytes = await files.readFileBody(req, req.headers['content-length']);
+    // Permissions can change while a file uploads.
+    if (authUser(session)?.id !== user.id) return send(res, 401, { error: 'Please log in' });
+    files.fileRecipient(D, user.id, to, safety, areFriends, bytes.byteLength);
+    const id = crypto.randomBytes(6).toString('hex'), name = files.fileName(url.searchParams.get('name'));
+    fs.writeFileSync(path.join(FILE_DIR, id + '.bin'), bytes, { mode: 0o600 });
+    const message = { id, from: user.id, to, kind: 'file', name, size: bytes.byteLength, t: '📎 ' + name, ts: Date.now() };
+    deliverMessage(message); return send(res, 200, { m: message });
+  }
+  const b = req.method === 'GET' ? {} : await readBody(req, url.pathname === '/api/me/photo' ? 300000 : url.pathname === '/api/voice' ? 700000 : 20000);
   const ip = req.socket.remoteAddress || 'unknown';
   if (route === 'GET /api/account/status') return send(res, 200, { emailAvailable: mail.configured });
   if (route === 'POST /api/account/request-reset') return send(res, 200, await accounts.requestReset(b.email, ip));
@@ -141,6 +161,22 @@ async function api(req, res, url) {
   const tok = (req.headers.authorization || '').replace('Bearer ', ''), me = authUser(tok);
   if (!me) return send(res, 401, { error: 'Please log in' });
   me.ts = Date.now();
+  if (route === 'GET /api/chats') return send(res, 200, chats.snapshot(me.id));
+  const chatAction = /^\/api\/chats\/([a-f0-9]{12})$/.exec(url.pathname);
+  const messageMark = /^\/api\/messages\/([a-f0-9]{12})\/mark$/.exec(url.pathname);
+  if (req.method === 'POST' && (chatAction || messageMark)) {
+    if (limited(me.id, 'chatActions', 60, 60000)) return send(res, 429, { error: 'Too many changes. Try again shortly.' });
+    if (chatAction) chats.chat(me.id, chatAction[1], b.action); else chats.mark(me.id, messageMark[1], b);
+    return send(res, 200, {});
+  }
+  const fileDownload = /^\/api\/files\/([a-f0-9]{12})$/.exec(url.pathname);
+  if (req.method === 'GET' && fileDownload) {
+    const message = D.msgs.find(m => m.id === fileDownload[1] && m.kind === 'file');
+    if (!message || !chats.visible(me.id, message)) return send(res, 404, { error: 'File is no longer available' });
+    const filename = path.join(FILE_DIR, message.id + '.bin');
+    if (!fs.existsSync(filename)) return send(res, 404, { error: 'File is no longer available' });
+    res.writeHead(200, files.downloadHeaders(message.name, message.size)); return fs.createReadStream(filename).pipe(res);
+  }
   if (route === 'POST /api/room/leave') {
     const room = rooms.get(roomOf.get(me.id)), member = room?.members.get(me.id);
     if (room && room.id === b.roomId && typeof b.leaveToken === 'string' &&
@@ -228,7 +264,7 @@ async function api(req, res, url) {
   }
   if (req.method === 'GET' && url.pathname.startsWith('/api/voice/')) {
     const id = url.pathname.slice(11).replace(/[^a-f0-9]/g, ''), m = D.msgs.find(x => x.id === id && x.kind === 'voice');
-    if (!m || (m.from !== me.id && m.to !== me.id)) return send(res, 404, { error: 'Not found' });
+    if (!m || !chats.visible(me.id, m)) return send(res, 404, { error: 'Not found' });
     try { const buf = fs.readFileSync(path.join(VOICE_DIR, id + '.bin')); res.writeHead(200, { 'Content-Type': m.mime, 'Cache-Control': 'private, max-age=86400' }); return res.end(buf); }
     catch { return send(res, 404, { error: 'Audio is no longer available' }); }
   }
@@ -264,6 +300,7 @@ async function api(req, res, url) {
     }
     if (limited(me.id, 'fr', 30, 3600e3)) return send(res, 429, { error: 'Too many requests. Try again later' });
     D.friends.push({ a: me.id, b: t.id, status: 'pending', by: me.id, ts: Date.now() }); save(); pushFr(me.id, t.id);
+    pushRegistry.notify(t.id, { kind: 'friend', target: me.id, id: crypto.randomBytes(6).toString('hex') }).catch(() => {});
     return send(res, 200, { status: 'pending' });
   }
   if (route === 'POST /api/friends/respond') {
@@ -281,7 +318,7 @@ async function api(req, res, url) {
     return send(res, 200, Object.values(D.users).filter(u => u.id !== me.id && !safety.blocked(me.id, u.id)).map(u => ({ ...pub(u), on: online.has(u.id) })));
   }
   if (route === 'GET /api/messages') {
-    return send(res, 200, D.msgs.filter(m => m.from === me.id || m.to === me.id).slice(-500));
+    return send(res, 200, D.msgs.filter(m => chats.visible(me.id, m)).slice(-500));
   }
   if (route === 'POST /api/report') {
     if (limited(me.id, 'reports', 10, 3600000)) return send(res, 429, { error: 'Too many reports. Try again later.' });
@@ -324,9 +361,9 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': u.photo.type, 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
       return res.end(Buffer.from(u.photo.data, 'base64'));
     }
-    const ST = { '/notices.js': ['text/javascript', 'notices.js'], '/app-navigation.js': ['text/javascript', 'app-navigation.js'], '/push-client.js': ['text/javascript', 'push-client.js'], '/room-heartbeat.js': ['text/javascript', 'room-heartbeat.js'], '/room-audio.js': ['text/javascript', 'room-audio.js'], '/manifest.webmanifest': ['application/manifest+json', 'manifest.webmanifest'], '/sw.js': ['text/javascript', 'sw.js'], '/icon-192.png': ['image/png', 'icon-192.png'], '/icon-512.png': ['image/png', 'icon-512.png'] };
+    const ST = { '/chat-tools.js': ['text/javascript', 'chat-tools.js'], '/notices.js': ['text/javascript', 'notices.js'], '/app-navigation.js': ['text/javascript', 'app-navigation.js'], '/push-client.js': ['text/javascript', 'push-client.js'], '/room-heartbeat.js': ['text/javascript', 'room-heartbeat.js'], '/room-audio.js': ['text/javascript', 'room-audio.js'], '/manifest.webmanifest': ['application/manifest+json', 'manifest.webmanifest'], '/sw.js': ['text/javascript', 'sw.js'], '/icon-192.png': ['image/png', 'icon-192.png'], '/icon-512.png': ['image/png', 'icon-512.png'] };
     if (ST[url.pathname]) {
-      res.writeHead(200, { 'Content-Type': ST[url.pathname][0], 'Cache-Control': ['/sw.js','/room-audio.js','/room-heartbeat.js','/app-navigation.js','/push-client.js','/notices.js'].includes(url.pathname) ? 'no-cache' : 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff' });
+      res.writeHead(200, { 'Content-Type': ST[url.pathname][0], 'Cache-Control': ['/chat-tools.js','/sw.js','/room-audio.js','/room-heartbeat.js','/app-navigation.js','/push-client.js','/notices.js'].includes(url.pathname) ? 'no-cache' : 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff' });
       return res.end(fs.readFileSync(path.join(__dirname, 'public', ST[url.pathname][1])));
     }
     if (url.pathname === '/healthz') { fs.accessSync(path.dirname(FILE), fs.constants.W_OK); res.writeHead(200, { 'X-Voice-Relay': turn.status, 'X-Voice-Relay-Provider': turn.provider, 'X-Push': pushSender.configured ? 'configured' : 'missing', 'X-Backup': backups.health(), 'X-Mail': mail.configured ? 'configured' : 'missing', 'Cache-Control': 'no-store' }); return res.end('ok'); }

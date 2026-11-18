@@ -1,6 +1,6 @@
 # Android push notifications and room links
 
-The native Android app uses Firebase Cloud Messaging HTTP v1 for text/voice direct messages and explicit friend-to-room invitations. Browser/PWA push and friend-request notifications are outside this update. The web UI and the room foreground-service controls are preserved. The existing large in-app banners remain tracked in issue #9.
+The native Android app uses Firebase Cloud Messaging HTTP v1 for text/voice/file direct messages, friend requests and explicit friend-to-room invitations. Browser/PWA push remains unavailable. The web UI and the room foreground-service controls are preserved. In-app banners are compact, deduplicated bottom notices.
 
 ## Activate the Worker sender
 
@@ -42,7 +42,7 @@ If the installed APK has a different signature, Android will reject an in-place 
 ## Behavior and privacy
 
 - Register after login and Android notification permission; denial or missing Firebase configuration never blocks voice rooms. Permission changes are checked again when the app resumes.
-- Notifications use a separate **Messages and invitations** channel at default importance. Every new event can alert, updates the timestamp and increments a visible count on the same conversation/room card. Dismissing a card does not suppress the next message. Duplicate deliveries do not alert again. Routine background token checks preserve existing notifications; actually opening the app clears social notifications and their counts. The room microphone foreground notification keeps its own channel and controls.
+- Notifications use a separate **Messages and requests** channel at default importance. Every new event can alert, updates the timestamp and increments a visible count on the same conversation/room card. Dismissing a card does not suppress the next message. Duplicate deliveries do not alert again. Routine background token checks preserve existing notifications; actually opening the app clears social notifications and their counts. The room microphone foreground notification keeps its own channel and controls.
 - The Worker dispatches even when a recipient has a live socket, because a background Android app can keep that socket connected. A visible Android activity suppresses the system push and retains the existing in-app experience.
 - Push payloads contain typed destination IDs, an event ID and an account binding. They contain no message text, sender name or room title. The system notification uses generic text.
 - Native storage holds only a scoped device refresh/revoke capability, not the account's full session token. Logout clears the account binding, cancels social notifications and revokes registrations for that login. Account changes reject delayed notifications from the previous binding. Invalid FCM tokens are pruned only on Google's explicit `UNREGISTERED` response.
@@ -67,3 +67,5 @@ After adding the private Worker credential and installing the matching APK, use 
 The sender refreshes a rejected cached Google access token once and records final failures as sanitized `WhassabiPush delivery failed` status/HTTP-code entries in server logs. These logs omit tokens, account IDs, message contents and Google response bodies. Message events are sent without an FCM collapse key so queued events cannot overwrite each other before reaching Android. Native notification sequence tests run against Robolectric's Android notification manager, including dismissal, token rechecks, account changes and preservation of the voice notification; live Google/OEM behavior still needs the phone checks above.
 
 Android **Force stop** in Settings prevents FCM delivery until the user opens the app again. Swiping the task away is different, though some manufacturer battery restrictions can also delay delivery. A real phone with Google Play services and permission granted is required for these checks. This update does not implement iOS/APNs or web push.
+
+Friend-request events require the updated native APK. Tap them to open the requester’s profile and accept or decline. See [chat tools and attachments](../CHAT-TOOLS.md) for file-picker validation.
