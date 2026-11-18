@@ -1,5 +1,24 @@
 # Android voice room reliability
 
+## Bluetooth and headset routing
+
+The room service now owns communication routing as well as audio focus. It enters `MODE_IN_COMMUNICATION`, follows audio-device additions/removals and uses `setCommunicationDevice` on Android 12+ to select a wired/USB headset, a Bluetooth HFP/LE headset, or the phone speaker. Android selects the matching input for that communication output. Android 5.1–11 uses the legacy SCO connection and waits for its connected broadcast. Leaving releases the route, SCO request, callbacks and communication mode.
+
+Android 12+ requests **Nearby devices** (`BLUETOOTH_CONNECT`) for paired headset access before capture/room startup; older Android uses the normal `BLUETOOTH` permission capped at API 30. No Bluetooth discovery, scan or location permission is added. Denial leaves the phone microphone and playback usable. Grant Nearby devices in Android Settings if previously denied. The implementation follows [Android's self-managed audio routing guide](https://developer.android.com/develop/connectivity/bluetooth/ble-audio/audio-manager) and [Bluetooth permission guidance](https://developer.android.com/develop/connectivity/bluetooth/bt-permissions).
+
+Native route readiness is asynchronous: a successful routing request alone does not mean a Bluetooth microphone is connected. Capture waits for confirmation, with a bounded 30-second connection attempt and phone/system fallback on failure. Waiting does not block native Mute or Leave. Device failures produce a local notice, not a room-wide connection error.
+
+Both web designs replace their microphone on a confirmed native route change, retaining the existing WebRTC peers/senders and the current user mute state. Old tracks are stopped with their handlers detached; late captures are discarded after another device change, demotion or Leave. Hardware-ended Android tracks have a short device-change debounce and bounded recovery, with one retry for transient capture-busy errors. Permission refusals still require explicit Unmute. Stale saved device IDs reset on a new native route; **Broadcast & Audio Hardware → Automatic (phone / headset)** also clears an override. Older APKs continue using the existing phone-capture path until upgraded.
+
+Automated checks cover Android 9 legacy SCO and Android 14 communication-device routing, preconnected HFP/LE headsets, hot-plug/unplug, wired/USB priority, denied permissions, delayed confirmation, timeouts and cleanup. Real Chromium peers additionally exchange fresh RTP after simulated native route changes while retaining the same peer and sender. These checks do not emulate a Bluetooth radio, earbud firmware or an Android audio driver.
+
+On two real phones, with the second person confirming actual received speech:
+
+1. Connect earbuds before opening Whassabi. Join/speak, allow Nearby devices and verify received audio plus the earbud microphone.
+2. While speaking in a room, connect earbuds, disconnect them, and reconnect. Both directions should switch without restarting the app or leaving the room.
+3. Repeat while manually muted and while using another app/locking the screen. Headset changes must preserve mute; Unmute must restore speech.
+4. Repeat with wired/USB headphones if available. Leave and verify other apps resume their normal audio route. Record phone, Android/WebView and earbud models if a step fails.
+
 ## Diagnosis
 
 The tracked Android project is a source overlay: `prepare-android` generates the actual manifest and Gradle project (the generated `mobile/android/` is ignored). Both `public/index.html` and `public/neon.html` are remotely served web clients; `mobile/www/index.html` is only the server launcher. Capacitor loads the Worker URL from `capacitor.config.json`.

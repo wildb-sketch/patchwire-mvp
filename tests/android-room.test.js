@@ -133,6 +133,92 @@ for (const file of ['index.html', 'neon.html']) {
   h.context.ws.onmessage({ data: JSON.stringify({ type: 'room:left', id: 'room1' }) }); await tick();
   assert.equal(h.context.S.room, null); assert.equal(h.context.R.mic, null); assert.equal(h.context.S.roomLeaveToken, '');
  });
+ test(`${file}: connected earbuds wait for native route confirmation before microphone capture`, async () => {
+  const ready = deferred(); let captures = 0, preparing = false;
+  const h = harness(file, { native: async method => { if (method === 'prepareAudioRoute') { preparing = true; return ready.promise; } return {}; }, capture: async () => { captures++; return stream(); } });
+  h.context.S.micId = 'saved-phone-mic'; const pending = h.context.syncMic(); while (!preparing) await tick();
+  assert.equal(captures, 0); ready.resolve({ managed: true, generation: 10, route: 'bluetooth' }); await pending;
+  assert.equal(captures, 1); assert.equal(h.context.S.micId, null); assert.equal(h.context.R.micRoute, 10);
+  assert(h.calls.findIndex(c => c.method === 'prepareBluetooth') < h.calls.findIndex(c => c.method === 'prepareAudioRoute'));
+ });
+ test(`${file}: headset hot-plug replaces only the microphone, preserves mute and keeps the room transport`, async () => {
+  let generation = 1, captures = 0, recoveries = 0;
+  const h = harness(file, { native: async method => method === 'prepareAudioRoute' ? { managed: true, generation } : {}, capture: async () => { captures++; return stream(); } });
+  await h.context.syncMic(); const room = h.context.S.room, peer = { pc: {} }; h.context.R.peers.peer = peer;
+  h.context.audio.recoverAll = () => recoveries++;
+  for (const muted of [false, true]) {
+   h.context.setMute(muted); await h.context.syncMic(); const previous = h.context.R.mic, oldEnded = previous.onended;
+   generation++; h.action({ action: 'audioRouteChanged', ready: false, generation }); assert.equal(h.context.R.mic, previous);
+   h.action({ action: 'audioRouteChanged', ready: true, generation }); await h.context.syncMic();
+   assert.notEqual(h.context.R.mic, previous); assert.equal(previous.readyState, 'ended'); assert.equal(h.context.R.mic.enabled, !muted); assert.equal(h.context.S.muted, muted);
+   assert.equal(h.context.S.room, room); assert.equal(h.context.R.peers.peer, peer);
+   oldEnded(); await tick(); assert.equal(h.context.R.micRoute, generation);
+   h.action({ action: 'audioRouteChanged', ready: true, generation }); await h.context.syncMic();
+  }
+  assert.equal(captures, 3); assert.equal(recoveries, 0); assert(!h.calls.some(c => c.method === 'stopRoom'));
+ });
+ test(`${file}: a second headset change discards an in-flight capture for the previous route`, async () => {
+  let generation = 1, captures = 0, started = false; const pending = deferred();
+  const h = harness(file, { native: async method => method === 'prepareAudioRoute' ? { managed: true, generation } : {}, capture: async () => { if (++captures === 2) { started = true; return pending.promise; } return stream(); } });
+  await h.context.syncMic(); generation = 2; h.action({ action: 'audioRouteChanged', ready: true, generation }); while (!started) await tick();
+  generation = 3; h.action({ action: 'audioRouteChanged', ready: true, generation });
+  const stale = stream(); pending.resolve(stale); await h.context.syncMic();
+  assert.equal(stale.track.readyState, 'ended'); assert.equal(captures, 3); assert.equal(h.context.R.micRoute, 3); assert.equal(h.context.S.muted, false);
+ });
+ test(`${file}: notification Mute and Leave bypass a Bluetooth wait and cannot resurrect capture`, async () => {
+  let generation = 1, waiting = false, captures = 0; const pending = deferred();
+  const h = harness(file, { native: async method => {
+   if (method === 'prepareAudioRoute') { if (generation === 2) { waiting = true; return pending.promise; } return { managed: true, generation }; }
+   if (method === 'stopRoom') pending.resolve({ managed: false }); return {};
+  }, capture: async () => { captures++; return stream(); } });
+  await h.context.syncMic(); generation = 2; h.action({ action: 'audioRouteChanged', ready: true, generation }); while (!waiting) await tick();
+  h.action({ action: 'mute', muted: true }); await tick(); await tick();
+  assert(h.calls.some(c => c.method === 'setMuted' && c.muted)); assert.equal(h.context.S.muted, true);
+  h.action({ action: 'leave' }); await h.context.syncMic(); await tick();
+  assert.equal(captures, 1); assert.equal(h.context.S.room, null); assert.equal(h.context.R.mic, null); assert.equal(h.calls.at(-1).method, 'stopRoom');
+ });
+ test(`${file}: hardware-ended tracks recover without automatic mute and retries remain bounded`, async () => {
+  let captures = 0; const h = harness(file, { capture: async () => { captures++; return stream(); } });
+  h.context.setTimeout = callback => setImmediate(callback);
+  await h.context.syncMic();
+  for (let attempt = 0; attempt < 3; attempt++) {
+   const track = h.context.R.mic; track.readyState = 'ended'; track.onended(); await tick(); await h.context.syncMic();
+   if (attempt < 2) { assert(h.context.R.mic); assert.equal(h.context.S.muted, false); }
+  }
+  assert.equal(captures, 3); assert.equal(h.context.R.mic, null); assert.equal(h.context.S.muted, true);
+ });
+ test(`${file}: repeated physical headset changes reset recovery without unmuting the user`, async () => {
+  let generation = 1;
+  const h = harness(file, { native: async method => method === 'prepareAudioRoute' ? { managed: true, generation } : {} });
+  h.context.S.muted = true; await h.context.syncMic();
+  for (let change = 0; change < 4; change++) {
+   const old = h.context.R.mic; old.readyState = 'ended'; old.onended();
+   generation++; h.action({ action: 'audioRouteChanged', ready: true, generation }); await h.context.syncMic();
+   assert.notEqual(h.context.R.mic, old); assert.equal(h.context.R.micRoute, generation); assert.equal(h.context.S.muted, true); assert.equal(h.context.R.mic.enabled, false);
+  }
+ });
+ test(`${file}: routing cannot retry microphone permission denial or capture for a listener`, async () => {
+  let captures = 0; const h = harness(file, { capture: async () => { captures++; throw Object.assign(Error('denied'), { name: 'NotAllowedError' }); } });
+  await h.context.syncMic(); h.action({ action: 'audioRouteChanged', ready: true, generation: 1 }); await h.context.syncMic(); assert.equal(captures, 1);
+  h.context.S.room.members[0].role = 'listener'; h.action({ action: 'audioRouteChanged', ready: true, generation: 2 }); await h.context.syncMic(); assert.equal(captures, 1);
+ });
+ test(`${file}: older APKs and denied Bluetooth access retain phone microphone operation`, async () => {
+  for (const old of [false, true]) {
+   const h = harness(file, { native: async method => {
+    if (['prepareBluetooth', 'prepareAudioRoute'].includes(method)) { if (old) throw Object.assign(Error('not implemented'), { code: 'UNIMPLEMENTED' }); return { enabled: false, managed: true, generation: 1, route: 'speaker' }; }
+    return {};
+   } });
+   await h.context.syncMic(); assert(h.context.R.mic); assert.equal(h.context.S.muted, false);
+  }
+ });
+ test(`${file}: transient headset capture errors get one bounded retry without changing user mute`, async () => {
+  let captures = 0;
+  const h = harness(file, { native: async method => method === 'prepareAudioRoute' ? { managed: true, generation: 1 } : {}, capture: async () => {
+   if (++captures === 1) throw Object.assign(Error('device transitioning'), { name: 'NotReadableError' }); return stream();
+  } });
+  h.context.setTimeout = callback => queueMicrotask(callback); h.context.S.muted = true;
+  await h.context.syncMic(); assert.equal(captures, 2); assert(h.context.R.mic); assert.equal(h.context.S.muted, true); assert.equal(h.context.R.mic.enabled, false);
+ });
  // Parse every inline script too, including bootstrap and the two independent designs.
  test(`${file}: every inline script parses`, () => {
   const html = fs.readFileSync(path.join(root, 'public', file), 'utf8');
@@ -151,8 +237,12 @@ test('manifest patch is repeatable, upgrades existing service types, and copies 
   assert.equal((twice.match(/android:networkSecurityConfig=/g) || []).length, 1);
   assert.equal((twice.match(/android:name="com.patchwire.app.RoomService"/g) || []).length, 1);
   for (const permission of ['RECORD_AUDIO', 'FOREGROUND_SERVICE_MICROPHONE', 'FOREGROUND_SERVICE_MEDIA_PLAYBACK', 'WAKE_LOCK', 'POST_NOTIFICATIONS']) assert(twice.includes(`android.permission.${permission}"`));
+  assert(twice.includes('android.permission.BLUETOOTH" android:maxSdkVersion="30"'));
+  assert.equal((twice.match(/android:name="android.permission.BLUETOOTH_CONNECT"/g) || []).length, 1);
+  assert(!twice.includes('android.permission.BLUETOOTH_SCAN')); assert(!twice.includes('android.permission.ACCESS_FINE_LOCATION'));
   assert(twice.includes('android:foregroundServiceType="microphone|mediaPlayback"'));
   assert(fs.existsSync(path.join(tmp, 'android/app/src/main/java/com/patchwire/app/RoomPlugin.java')));
+  assert(fs.existsSync(path.join(tmp, 'android/app/src/main/java/com/patchwire/app/RoomAudioRoute.java')));
   assert.equal(once.replace(/\s/g, ''), twice.replace(/\s/g, ''));
  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });
