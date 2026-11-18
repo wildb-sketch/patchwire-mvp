@@ -1,0 +1,24 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), net = require('node:net');
+const { spawn } = require('node:child_process');
+const { fileBucket, restoreOffline } = require('../lib/node-backups');
+const scenario = require('./helpers/chat-scenario.cjs');
+test('Node chat tools isolate history and saved messages, protect files and persist through backup recovery', { timeout: 30000 }, async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'whassabi-chats-'));
+  const listener = net.createServer(); await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve)); const port = listener.address().port; await new Promise(resolve => listener.close(resolve));
+  const origin = `http://127.0.0.1:${port}`, operator = 'a'.repeat(64);
+  const child = spawn(process.execPath, [path.join(__dirname, '../server.js')], { env: { ...process.env, PORT: String(port), DATA_FILE: path.join(directory, 'data.json'), OPS_TOKEN: operator, FCM_SERVICE_ACCOUNT: '', RESEND_API_KEY: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(async () => { child.kill(); await new Promise(resolve => child.exitCode !== null ? resolve() : child.once('exit', resolve)); fs.rmSync(directory, { recursive: true, force: true }); });
+  await new Promise((resolve, reject) => { child.stdout.once('data', resolve); child.once('error', reject); });
+  const fixture = await scenario(fetch, origin);
+  const response = await fetch(origin + '/internal/ops/backup', { method: 'POST', headers: { Authorization: 'Bearer ' + operator, 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal(response.status, 200); const backup = await response.json();
+  const bucket = fileBucket(path.join(directory, 'backups'));
+  assert(await bucket.get('snapshots/' + backup.id + '/file/' + fixture.message.id));
+  const output = path.join(directory, 'recovered'); await restoreOffline(path.join(directory, 'backups'), backup.id, output);
+  const restored = JSON.parse(fs.readFileSync(path.join(output, 'data.json')));
+  assert.deepEqual(fs.readFileSync(path.join(output, 'voice', 'files', fixture.message.id + '.bin')), fixture.bytes);
+  assert(restored.chats[fixture.b.me.id + ':' + fixture.a.me.id].pinned);
+  assert(restored.messageMarks[fixture.b.me.id + ':' + fixture.nextMessage.id].favorite);
+});

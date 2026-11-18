@@ -70,3 +70,5 @@ JSON-file storage on the Node backend (Cloudflare uses Durable Object storage), 
 Voice rooms are not recorded and have no speaking indicator yet. Moments still shows sample content.
 
 See [account, safety and operations setup](OPERATIONS.md) for email activation, blocking/reporting, private snapshots, recovery checks, monitoring and validation boundaries.
+
+Chat pins, favorites, private clear/delete controls, file sharing and friend-request push are described in [CHAT-TOOLS.md](CHAT-TOOLS.md).

@@ -200,6 +200,8 @@ nav b.bg{top:7px;right:10px}
 .vd{font:500 12px 'Space Grotesk';opacity:.8}
 .cam{position:absolute;right:-2px;bottom:2px;width:34px;height:34px;border-radius:50%;background:var(--lime);color:#000;display:grid;place-items:center;border:3px solid #000}
 @media (prefers-reduced-motion:reduce){*{animation:none!important}}
+
+.message-item{display:flex;align-items:center;gap:4px;max-width:94%;min-width:0}.message-item.mine{align-self:flex-end;flex-direction:row-reverse}.message-main{min-width:0;display:flex;flex-direction:column}.message-item .m{max-width:100%}.message-options{flex:none;min-width:28px;min-height:32px;color:var(--mute);border-radius:8px;font-size:20px}.message-options:focus-visible{outline:2px solid var(--lime)}.message-label{font-size:10px;color:var(--mute);padding:2px 8px}.file-card{display:flex;flex-direction:column;gap:4px;max-width:100%;text-align:left;color:inherit}.file-card b{overflow-wrap:anywhere}.file-card small{opacity:.8}.upload-status{padding:6px 12px;font-size:12px;color:var(--mute);overflow-wrap:anywhere}.saved-card{padding:12px 0;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:8px}.chat-composer .in{min-width:0;width:0}.chat-composer button{flex:none}.chat-composer .ib2{width:30px;min-width:30px}.chat-composer{gap:6px}.chat-options{flex:none}
 </style>
 </head>
 <body>
@@ -207,6 +209,7 @@ nav b.bg{top:7px;right:10px}
 <script src="/room-audio.js"></script>
 <script src="/room-heartbeat.js"></script>
 <script src="/notices.js"></script>
+<script src="/chat-tools.js"></script>
 <script src="/app-navigation.js"></script>
 <script src="/push-client.js"></script>
 <script>
@@ -218,7 +221,7 @@ const ic=(n,s=20,w=2)=>`<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill
 const TOPICS=['Music','Talk','Culture','Gaming','Lifestyle','Other'];
 const lab=t=>t=='Talk'?'Talk & Debate':t;
 const COVERS=['radial-gradient(circle at 75% 20%,#7c3aed99,transparent 55%),radial-gradient(circle at 15% 80%,#ccff3333,transparent 50%),linear-gradient(135deg,#1a1033,#07070c)','radial-gradient(circle at 70% 30%,#f9731699,transparent 55%),linear-gradient(135deg,#2a1208,#07070c)','radial-gradient(circle at 30% 30%,#06b6d499,transparent 55%),linear-gradient(135deg,#06232b,#07070c)','radial-gradient(circle at 80% 70%,#ccff3344,transparent 55%),linear-gradient(135deg,#142108,#07070c)','radial-gradient(circle at 60% 20%,#ec489999,transparent 55%),linear-gradient(135deg,#2a0b1d,#07070c)','radial-gradient(circle at 20% 70%,#3b82f699,transparent 55%),linear-gradient(135deg,#0b1633,#07070c)'];
-const S={tok:null,me:null,blocks:[],users:[],rooms:[],msgs:[],tab:'discover',topic:'For You',q:'',room:null,chat:[],react:0,ov:null,deaf:false,muted:false,edit:false,lf:{title:'',desc:'',topic:'Talk',cover:0,aud:'everyone'},ef:null,menu:false,rec:null,read:{},fr:{friends:[],incoming:[],outgoing:[]},fol:{following:[],followers:[]},feed:[],itab:'chats',fq:'',fres:[],unr:false,sq:'',sres:[],micId:null,mics:[],micLabel:''};
+const S={tok:null,me:null,blocks:[],chatPrefs:{},marks:{},saved:[],upload:null,users:[],rooms:[],msgs:[],tab:'discover',topic:'For You',q:'',room:null,chat:[],react:0,ov:null,deaf:false,muted:false,edit:false,lf:{title:'',desc:'',topic:'Talk',cover:0,aud:'everyone'},ef:null,menu:false,rec:null,read:{},fr:{friends:[],incoming:[],outgoing:[]},fol:{following:[],followers:[]},feed:[],itab:'chats',fq:'',fres:[],unr:false,sq:'',sres:[],micId:null,mics:[],micLabel:''};
 try{S.tok=localStorage.getItem('pw_tok');S.read=JSON.parse(localStorage.getItem('pw_read')||'{}');S.micId=localStorage.getItem('pw_mic')}catch(e){}
 let ws=null,retry=0,tmr=0,booted=false,ICE=[{urls:'stun:stun.l.google.com:19302'}];
 const hue=s=>[...String(s)].reduce((a,c)=>a*31+c.charCodeAt(0),7)%360;
@@ -251,7 +254,8 @@ function closeModal(fromPop){const was=!$('#md').hidden;$('#md').hidden=true;$('
 
 /* ---------- data helpers ---------- */
 const convos=()=>{const m={};S.msgs.forEach(x=>{const p=x.from==S.me.id?x.to:x.from;(m[p]=m[p]||[]).push(x)});
- return Object.entries(m).map(([p,l])=>({p,last:l[l.length-1],un:l.filter(x=>x.from==p&&x.ts>(S.read[p]||0)).length})).sort((a,b)=>b.last.ts-a.last.ts)};
+ Object.entries(S.chatPrefs).forEach(([peer,state])=>{if(!state.hidden&&!m[peer])m[peer]=[]});
+ return Object.entries(m).map(([p,l])=>({p,pinned:!!S.chatPrefs[p]?.pinned,last:l[l.length-1]||{t:'No messages yet',ts:S.chatPrefs[p]?.updated||Date.now(),from:''},un:l.filter(x=>x.from==p&&x.ts>(S.read[p]||0)).length})).sort((a,b)=>Number(b.pinned)-Number(a.pinned)||b.last.ts-a.last.ts)};
 const unread=()=>convos().reduce((a,c)=>a+c.un,0);
 const liveRooms=()=>S.rooms.filter(r=>S.topic=='For You'||r.topic==S.topic).sort((a,b)=>b.n-a.n);
 const hostRoom=id=>S.rooms.find(r=>r.host==id);
@@ -296,10 +300,10 @@ function vFeed(){
  :`<div class="empty"><img src="${MASCOT}" alt=""><p>Follow people or add friends to see the rooms they start.</p></div>`);
 }
 function convRow(c){const u=who(c.p),live=hostRoom(c.p);
- return `<button class="lr" data-chat="${esc(c.p)}" style="${live?'border-color:#3b4a12;background:linear-gradient(90deg,#161d07,var(--s1))':''}"><div class="l" style="flex:1">${avb(u.id,u.nick,50,live?'live':'',live?'rg':'rg2')}<div class="sp"><div class="row"><b class="gr tr sp" style="font-size:16px">${esc(u.nick)} <span class="mute" style="font:400 13px 'Plus Jakarta Sans'">${esc(handle(u.nick))}</span></b>${live?'<span class="bdg">Broadcasting</span>':''}<span class="s" style="color:${c.un?'var(--lime)':'var(--mute)'}">${ago(c.last.ts)}</span></div><div class="mute tr">${c.last.from==S.me.id?'You: ':''}${esc(c.last.t)}</div>${live?`<div class="row" style="margin-top:6px"><span class="lime s">${ic('hp',11)} ${live.n} tuned in</span><span class="sp"></span><span class="btn sm" data-join="${esc(live.id)}">Join Stage</span></div>`:''}</div>${c.un?`<span class="bdg">${c.un}</span>`:''}</div></button>`}
+ return `<button class="lr" data-chat="${esc(c.p)}" style="${live?'border-color:#3b4a12;background:linear-gradient(90deg,#161d07,var(--s1))':''}"><div class="l" style="flex:1">${avb(u.id,u.nick,50,live?'live':'',live?'rg':'rg2')}<div class="sp"><div class="row"><b class="gr tr sp" style="font-size:16px">${c.pinned?'📌 ':''}${esc(u.nick)} <span class="mute" style="font:400 13px 'Plus Jakarta Sans'">${esc(handle(u.nick))}</span></b>${live?'<span class="bdg">Broadcasting</span>':''}<span class="s" style="color:${c.un?'var(--lime)':'var(--mute)'}">${ago(c.last.ts)}</span></div><div class="mute tr">${c.last.from==S.me.id?'You: ':''}${esc(c.last.t)}</div>${live?`<div class="row" style="margin-top:6px"><span class="lime s">${ic('hp',11)} ${live.n} tuned in</span><span class="sp"></span><span class="btn sm" data-join="${esc(live.id)}">Join Stage</span></div>`:''}</div>${c.un?`<span class="bdg">${c.un}</span>`:''}</div></button>`}
 function inboxList(){
  const q=S.q.toLowerCase();let cs=convos().filter(c=>!q||(who(c.p).nick+c.last.t).toLowerCase().includes(q));if(S.unr)cs=cs.filter(c=>c.un);
- return `<div class="sc" style="margin:14px 0 8px"><span class="mute s gr" style="letter-spacing:.8px">RECENT DISCUSSIONS</span><button class="lk" id="fl" style="color:${S.unr?'var(--lime)':'var(--mute)'}">${ic('filter',14)} ${S.unr?'Unread':'Filter'}</button></div>`
+ return `<div class="sc" style="margin:14px 0 8px"><span class="mute s gr" style="letter-spacing:.8px">RECENT DISCUSSIONS</span><button class="lk" id="saved-messages">Saved</button><button class="lk" id="fl" style="color:${S.unr?'var(--lime)':'var(--mute)'}">${ic('filter',14)} ${S.unr?'Unread':'Filter'}</button></div>`
  +(cs.length?cs.map(convRow).join('')+`<p class="mute c s" style="padding:18px 0">${ic('wave',16)}<br>You’re caught up with all backstage chats</p>`:`<p class="mute c" style="padding:20px">${q||S.unr?'No matches.':'No conversations yet. Open the Friends tab to add someone, then say hi.'}</p>`);
 }
 const secH=t=>`<div class="sc" style="margin:16px 0 8px"><span class="mute s gr" style="letter-spacing:.8px">${t}</span></div>`;
@@ -350,6 +354,7 @@ function bindMain(){
  bindFr(m);
  m.querySelectorAll('[role=button][data-join]').forEach(b=>b.onkeydown=e=>{if(e.key=='Enter'){e.preventDefault();joinRoom(b.dataset.join)}});
  const g=i=>$(i);
+ if(g('#saved-messages'))g('#saved-messages').onclick=()=>chatTools.showSaved();
  if(g('#go2'))g('#go2').onclick=()=>openOv('live');
  if(g('#sa'))g('#sa').onclick=()=>openOv('all');
  if(g('#inv'))g('#inv').onclick=async()=>{try{await navigator.clipboard.writeText(location.origin)}catch(e){}toast('App link copied. Send it to a friend')};
@@ -371,7 +376,7 @@ function bindMain(){
  if(g('#prv'))g('#prv').onclick=privSheet;
  if(g('#lo'))g('#lo').onclick=async()=>{await pushClient.stop();navigation.clear();try{await api('/logout','POST')}catch(e){}try{localStorage.removeItem('pw_tok')}catch(e){}location.reload()};
 }
-function bindMain2(){$('#il').querySelectorAll('[data-chat]').forEach(b=>b.onclick=()=>openOv('chat',b.dataset.chat));$('#il').querySelectorAll('[data-join]').forEach(b=>b.onclick=e=>{e.stopPropagation();joinRoom(b.dataset.join)});const f=$('#fl');if(f)f.onclick=()=>{S.unr=!S.unr;render()}}
+function bindMain2(){const saved=$('#saved-messages');if(saved)saved.onclick=()=>chatTools.showSaved();$('#il').querySelectorAll('[data-chat]').forEach(b=>b.onclick=()=>openOv('chat',b.dataset.chat));$('#il').querySelectorAll('[data-join]').forEach(b=>b.onclick=e=>{e.stopPropagation();joinRoom(b.dataset.join)});const f=$('#fl');if(f)f.onclick=()=>{S.unr=!S.unr;render()}}
 
 async function loadBlocks(){try{S.blocks=await api('/blocks')}catch(e){S.blocks=[]}if(S.ov?.t==='chat')paintOv()}
 async function resetSheet(){
@@ -414,7 +419,7 @@ function saveRead(){try{localStorage.setItem('pw_read',JSON.stringify(S.read))}c
 function paintOv(){
  if(!S.ov){$('#ov').hidden=true;return}
  $('#ov').hidden=false;
- keep(()=>{({live:pLive,chat:pChat,room:pRoom,auth:pAuth,search:pSearch,notif:pNotif,all:pAll})[S.ov.t]()});
+ keep(()=>{({live:pLive,chat:pChat,saved:()=>chatTools.savedView(),room:pRoom,auth:pAuth,search:pSearch,notif:pNotif,all:pAll})[S.ov.t]()});
 }
 const hdr=(t,right='')=>`<div class="ph"><button class="ib2" id="bk" aria-label="Back">${ic('cl',22)}</button><span class="tt sp">${t}</span>${right}</div>`;
 function pLive(){
@@ -462,7 +467,9 @@ async function micSheet(){
   b.querySelector('[data-x]').onclick=closeModal;
   b.querySelectorAll('[data-d]').forEach(x=>x.onclick=()=>{S.micId=x.dataset.d;try{localStorage.setItem('pw_mic',S.micId)}catch(e){}if(R.mic){R.mic.stop();R.mic=null}micFailed=false;closeModal();toast('Microphone selected');if(S.ov&&S.ov.t=='live'){stopMeter();startMeter()}else if(S.room)syncMic()})})}
 const fmt=s=>Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0');
-function bubble(x){const me=x.from==S.me.id;
+function bubble(x){const mark=S.marks[x.id]||{};return `<div class="message-item ${x.from==S.me.id?'mine':''}" data-message="${esc(x.id)}"><div class="message-main">${messageContent(x)}${mark.pinned||mark.favorite?`<span class="message-label">${mark.pinned?'📌 Pinned ':''}${mark.favorite?'★ Favorite':''}</span>`:''}</div><button class="message-options" data-message-options="${esc(x.id)}" aria-label="Message options">⋯</button></div>`}
+function messageContent(x){const me=x.from==S.me.id;
+ if(x.kind==='file')return `<div class="m ${me?'me':''}"><button class="file-card" data-file="${esc(x.id)}" aria-label="Save ${esc(x.name)}"><b>📎 ${esc(x.name)}</b><small>${chatTools.sizeLabel(x.size)} · Save file</small></button></div>`;
  if(x.kind=='voice'){const bars=[...String(x.id)].slice(0,24).map(c=>4+(c.charCodeAt(0)*7%16)).map(v=>`<i style="height:${v}px"></i>`).join('');
   return `<div class="m vm ${me?'me':''}" data-vm="${esc(x.id)}"><button class="vp" data-v="${esc(x.id)}" aria-label="Play voice message">${ic('play',16)}</button><span class="vw">${bars}</span><span class="vd">${fmt(x.dur||0)}</span></div>`}
  const mm=/(https?:\/\/\S*(?:#room=|\/room\/)([0-9a-f]{8}))/.exec(String(x.t));
@@ -496,17 +503,17 @@ function stopRec(send){const r=S.rec;if(!r)return;r.send=send;try{r.mr.stop()}ca
 function pChat(){
  const id=S.ov.id,u=who(id),h=S.msgs.filter(x=>x.from==id||x.to==id),blocked=S.blocks.some(x=>x.id===id),can=!blocked&&(isFr(id)||(u.dm||'everyone')!='friends'),req=S.fr.outgoing.some(x=>x.id==id),lv=hostRoom(id);
  const bar=S.rec?`<div class="bar"><button class="ib2 sq" id="rc" aria-label="Cancel recording">${ic('x',16)}</button><span class="sp row" style="gap:8px"><i class="dt" style="background:var(--red)"></i><b class="gr" id="rt">${fmt((Date.now()-S.rec.t0)/1e3)}</b><span class="mute s">Recording…</span></span><button class="btn sm" id="rs" aria-label="Send voice message">${ic('send',16)}</button></div>`
- :can?`<div class="bar"><button class="ib2 sq" id="vm" aria-label="Record a voice message" style="color:var(--lime)">${ic('mic',17)}</button><input class="in pill" id="ci" placeholder="Message ${esc(u.nick)}…" aria-label="Message" maxlength="500" style="flex:1"><button class="btn sm" id="sd" aria-label="Send">${ic('send',16)}</button></div>`
+ :can?`<div class="bar chat-composer"><input id="file-input" type="file" hidden><button class="ib2 sq" id="attach-file" aria-label="Attach file" ${S.upload?'disabled':''}>${ic('plus',17)}</button><button class="ib2 sq" id="vm" aria-label="Record a voice message" style="color:var(--lime)">${ic('mic',17)}</button><input class="in pill" id="ci" placeholder="Message ${esc(u.nick)}…" aria-label="Message" maxlength="500" style="flex:1"><button class="btn sm" id="sd" aria-label="Send">${ic('send',16)}</button></div>`
  :blocked?'<div class="bar"><span class="mute s">Unblock this person to send messages.</span></div>':`<div class="bar"><span class="mute s sp">${esc(u.nick)} only accepts messages from friends.</span>${req?'<span class="bdg g">Requested</span>':'<button class="btn sm" id="af">Add friend</button>'}</div>`;
- $('#ob').innerHTML=`<div class="ph"><button class="ib2" id="bk" aria-label="Back">${ic('cl',22)}</button><button class="row sp" data-prof="${esc(id)}">${avb(u.id,u.nick,38,lv?'live':'',lv?'rg':'rg2')}<span class="sp"><span class="gr tr" style="display:block;font-weight:700;font-size:16px">${esc(u.nick)}</span><span class="mute s">${esc(handle(u.nick))}</span></span></button>${lv?`<button class="btn sm" data-join="${esc(lv.id)}">Join Stage</button>`:''}</div><div class="ob" id="ms"><div class="msgs">${h.length?h.map(bubble).join(''):'<p class="mute c">Say hi 👋</p>'}</div></div>${bar}`;
- $('#bk').onclick=closeOv;$('#ms').scrollTop=1e6;
+ $('#ob').innerHTML=`<div class="ph"><button class="ib2" id="bk" aria-label="Back">${ic('cl',22)}</button><button class="row sp" data-prof="${esc(id)}">${avb(u.id,u.nick,38,lv?'live':'',lv?'rg':'rg2')}<span class="sp"><span class="gr tr" style="display:block;font-weight:700;font-size:16px">${esc(u.nick)}</span><span class="mute s">${esc(handle(u.nick))}</span></span></button>${lv?`<button class="btn sm" data-join="${esc(lv.id)}">Join Stage</button>`:''}<button class="ib2 chat-options" id="chat-options" aria-label="Chat options">⋯</button></div><div class="ob" id="ms"><div class="msgs">${h.length?h.map(bubble).join(''):'<p class="mute c">Say hi 👋</p>'}</div></div>${S.upload?.peer===id?`<div class="upload-status" role="status">Sending ${esc(S.upload.name)}…</div>`:''}${bar}`;
+ $('#bk').onclick=closeOv;$('#ms').scrollTop=1e6;$('#chat-options').onclick=()=>chatTools.menu(id);chatTools.bind($('#ob'));
  $('#ob').querySelectorAll('[data-prof]').forEach(b=>b.onclick=()=>openProfile(b.dataset.prof));
  $('#ob').querySelectorAll('[data-join]').forEach(b=>b.onclick=()=>{dropOv();joinRoom(b.dataset.join)});
  $('#ob').querySelectorAll('[data-jr]').forEach(b=>b.onclick=()=>{dropOv();joinRoom(b.dataset.jr)});
  $('#ob').querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>playVoice(b.dataset.v,b));
  if(S.rec){$('#rc').onclick=()=>stopRec(false);$('#rs').onclick=()=>stopRec(true)}
  else if(can){const send=()=>{const v=$('#ci').value.trim();if(v&&wsSend({type:'msg',to:id,t:v}))$('#ci').value=''};
-  $('#sd').onclick=send;$('#ci').onkeydown=e=>{if(e.key=='Enter')send()};$('#vm').onclick=startRec}
+  $('#sd').onclick=send;$('#ci').onkeydown=e=>{if(e.key=='Enter')send()};$('#vm').onclick=startRec;$('#attach-file').onclick=()=>$('#file-input').click();$('#file-input').onchange=e=>chatTools.upload(e.target.files[0],id)}
  else if($('#af'))$('#af').onclick=()=>frCall('/friends/request',{id},()=>'Friend request sent');
 }
 function pAll(){const rs=[...S.rooms].sort((a,b)=>b.n-a.n);
@@ -783,7 +790,7 @@ const navigation=window.createAppNavigation({storage:localStorage,origin:locatio
  ready:()=>!!S.me&&!!ws&&ws.readyState===1&&booted&&(!S.rooms.some(r=>r.members.some(m=>m.uid===S.me.id))||!!S.room),uid:()=>S.me?.id,
  consumeNative:id=>window.Capacitor.nativePromise('NavigationPlugin','consume',{id}),
  wrongAccount:()=>toast('This notification belongs to another account.'),
- navigate:item=>{if(item.kind==='room')joinRoom(item.target);else if(item.kind==='profile')openProfile(item.target);else openOv('chat',item.target)}
+ navigate:item=>{if(item.kind==='room')joinRoom(item.target);else if(item.kind==='profile'){const uid=S.me?.id;loadFriends().then(()=>{if(S.me?.id===uid)openProfile(item.target)})}else openOv('chat',item.target)}
 });
 if(navigation.capture(location.href))history.replaceState(null,'',location.pathname+location.search);
 const nativePush=(method,options={})=>window.Capacitor.nativePromise('PushPlugin',method,options);
@@ -805,14 +812,15 @@ function connect(){
  clearTimeout(wsRetryTimer);if(ws&&(ws.readyState===0||ws.readyState===1))return;
  roomHeartbeat.stop();
  const socket=ws=new WebSocket((location.protocol=='https:'?'wss://':'ws://')+location.host+'/ws?token='+S.tok);
- ws.onopen=()=>{if(ws!==socket)return;retry=0;if(pendingRoomExit)wsSend(pendingRoomExit.command);roomHeartbeat.start(socket)};
+ ws.onopen=()=>{if(ws!==socket)return;retry=0;if(pendingRoomExit)wsSend(pendingRoomExit.command);roomHeartbeat.start(socket);chatTools.load().catch(()=>{});loadFriends(true)};
  ws.onmessage=e=>{if(ws!==socket)return;roomHeartbeat.message(socket);const d=JSON.parse(e.data),t=d.type;if(t==='pong')return;
   if(t=='error')return toast(d.error);
   if(t==='safety:changed'){Promise.all([loadBlocks(),loadFriends(),loadFollows(),loadUsers()]).then(()=>{if(S.ov?.t==='chat')paintOv()});return}
   if(t==='room:removed'){if(S.room?.id===d.id){cleanup();toast(d.reason||'You left the room.')}return}
+  if(t==='chats:changed'){chatTools.load().catch(()=>{});return}
   if(t=='friends'){loadFriends(true);return}
   if(t=='follows'){loadFollows(true);return}
-  if(t=='msg'){if(S.msgs.some(m=>m.id==d.m.id))return;S.msgs.push(d.m);
+  if(t=='msg'){if(S.msgs.some(m=>m.id==d.m.id)||!chatTools.visible(d.m))return;S.msgs.push(d.m);
    const peer=d.m.from==S.me.id?d.m.to:d.m.from,open=S.ov&&S.ov.t=='chat'&&S.ov.id==peer;
    if(open){S.read[peer]=Date.now();saveRead();paintOv()}
    else if(d.m.from!=S.me.id){toast(who(d.m.from).nick+': '+String(d.m.t).slice(0,40),()=>openOv('chat',peer),{key:'message:'+peer});if(!S.users.some(u=>u.id==d.m.from))loadUsers()}
@@ -840,8 +848,13 @@ async function loadFriends(notify){try{const prev=S.fr,f=await api('/friends');
   const ac=f.friends.find(u=>prev.outgoing.some(x=>x.id==u.id));if(ac)toast(ac.nick+' accepted your friend request',()=>goTab('inbox','friends'))}
  S.fr=f;f.friends.concat(f.incoming,f.outgoing).forEach(u=>{if(!S.users.some(x=>x.id==u.id))S.users.push(u)});
  if(S.ov&&S.ov.t=='chat')paintOv();else if(S.ov&&(S.ov.t=='notif'||S.ov.t=='search'))paintOv();else if(!S.ov)keep(render)}catch(e){}}
-async function boot(me){S.me=me;dropOv();try{S.msgs=await api('/messages')}catch(e){S.msgs=[]}
+async function boot(me){S.me=me;dropOv();try{await chatTools.load()}catch(e){S.msgs=[]}
  await loadBlocks();await loadUsers();await loadFriends();await loadFollows();await loadIce();connect();pushClient.start();clearInterval(tmr);tmr=setInterval(()=>{loadUsers();loadFriends();loadFollows()},20000);S.tab='discover';render()}
+const chatTools=window.createChatTools({state:S,api,toast,modal,closeModal,closeOv,openOv,goTab,who,bubble,ic,esc,playVoice,
+ android:androidRoom,nativeSave:args=>window.Capacitor.nativePromise('FilesPlugin','save',args),joinInvite:id=>{dropOv();joinRoom(id)},
+ repaint:()=>{if(S.ov&&['chat','saved'].includes(S.ov.t))keep(paintOv);else if(!S.ov)keep(render)},
+ pruned:()=>{if(VA&&!S.msgs.some(m=>m.id===VA.id)&&!S.saved.some(m=>m.id===VA.id)){VA.a.pause();VA=null}for(const id of Object.keys(VC))if(!S.msgs.some(m=>m.id===id)&&!S.saved.some(m=>m.id===id)){URL.revokeObjectURL(VC[id]);delete VC[id]}}
+});
 window.addEventListener('pagehide',()=>{clearTimeout(networkTimer);clearTimeout(wsRetryTimer);roomHeartbeat.stop();if(ws){ws.onopen=ws.onmessage=ws.onclose=null;ws.close();ws=null}if(S.room){roomEpoch++;if(R.mic)R.mic.stop();roomCall('dismissRoom').catch(()=>roomCall('stopRoom').catch(()=>{}))}});
 if('serviceWorker' in navigator&&location.protocol!='file:')navigator.serviceWorker.register('/sw.js').catch(()=>{});
 (async()=>{if(S.tok){try{return await boot(await api('/me'))}catch(e){S.tok=null}}S.ov={t:'auth'};paintOv()})();

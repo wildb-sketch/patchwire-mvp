@@ -18,6 +18,9 @@
 /notices.js
   Cache-Control: no-cache
 
+/chat-tools.js
+  Cache-Control: no-cache
+
 /account.html
   Cache-Control: no-store
   Referrer-Policy: no-referrer
