@@ -13,6 +13,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import org.json.JSONObject;
+import java.lang.ref.WeakReference;
 
 /** Owns the Android foreground lifetime; WebRTC and its microphone track remain in the WebView. */
 public class RoomService extends Service {
@@ -28,6 +29,16 @@ public class RoomService extends Service {
     static final int NOTIF_ID = 1001;
     static volatile boolean active = false;
     static volatile boolean microphone = false;
+    private static WeakReference<RoomService> current = new WeakReference<>(null);
+    private RoomAudioRoute routes;
+    static void prepareAudioRoute(RoomAudioRoute.Ready callback) {
+        RoomService service = current.get();
+        if (service == null || service.routes == null || !active) callback.result(false, "system", 0);
+        else service.routes.awaitReady(callback);
+    }
+    static void refreshAudioRoute() {
+        RoomService service = current.get(); if (service != null && service.routes != null) service.routes.resume();
+    }
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private String serverUrl = "", token = "", roomId = "", leaveToken = "";
@@ -59,12 +70,14 @@ public class RoomService extends Service {
         // Media apps can take focus without taking microphone ownership. Android itself
         // enforces microphone privacy/silencing for calls and competing recorders.
         android.util.Log.i("WhassabiRoom", "Audio focus=" + change + "; microphone intent unchanged");
+        if (change == AudioManager.AUDIOFOCUS_GAIN && routes != null) routes.resume();
     };
 
     @Override public IBinder onBind(Intent intent) { return null; }
 
     @Override public void onCreate() {
         super.onCreate();
+        current = new WeakReference<>(this);
         audio = (AudioManager) getSystemService(AUDIO_SERVICE);
         notifications = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= 26) {
@@ -148,6 +161,8 @@ public class RoomService extends Service {
                 .setOnAudioFocusChangeListener(focusListener).build();
             audio.requestAudioFocus(focus);
         } else audio.requestAudioFocus(focusListener, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN);
+        routes = new RoomAudioRoute(this, audio, RoomPlugin::audioRouteChanged);
+        routes.start();
     }
 
     @Override public void onTaskRemoved(Intent rootIntent) {
@@ -201,6 +216,8 @@ public class RoomService extends Service {
         token = ""; leaveToken = "";
         active = false;
         microphone = false;
+        if (routes != null) routes.stop();
+        if (current.get() == this) current.clear();
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
         if (Build.VERSION.SDK_INT >= 26 && focus != null) audio.abandonAudioFocusRequest(focus);

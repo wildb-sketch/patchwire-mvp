@@ -409,7 +409,7 @@ function mini(){
  $('#msd').onclick=()=>setDeaf(!S.deaf);$('#mx').onclick=leaveRoom;
 }
 function setDeaf(v){S.deaf=v;Object.values(R.peers).forEach(p=>{if(p.audio)p.audio.muted=S.deaf});if(S.ov&&S.ov.t=='room')paintOv();else mini()}
-function setMute(v){if(!S.room||!iSpeak())return;S.muted=!!v;if(!v)micFailed=false;if(R.mic)R.mic.enabled=!S.muted;wsSend({type:'room:mute',on:S.muted});nativeRoom('mute',S.muted).catch(e=>toast(micError(e)));syncMic();if(S.ov&&S.ov.t=='room')paintOv();else mini()}
+function setMute(v){if(!S.room||!iSpeak())return;S.muted=!!v;if(!v){micFailed=false;endedRetries=0;}if(R.mic)R.mic.enabled=!S.muted;wsSend({type:'room:mute',on:S.muted});nativeRoom('mute',S.muted).catch(e=>toast(micError(e)));syncMic();if(S.ov&&S.ov.t=='room')paintOv();else mini()}
 
 /* ---------- overlays ---------- */
 function openOv(t,id){if(S.ov&&S.ov.t=='live'&&t!='live')stopMeter();if(S.rec)stopRec(false);S.menu=false;if(!S.ov)hpush();S.ov={t,id};if(t=='chat'){S.read[id]=Date.now();saveRead()}if(t=='search'){S.sq='';S.sres=[]}paintOv();mini()}
@@ -463,9 +463,9 @@ async function startMeter(){
 function stopMeter(){meterEpoch++;if(meter){clearInterval(meter.id);meter.st.getTracks().forEach(t=>t.stop());meter=null}}
 async function micSheet(){
  try{if(!S.mics.length)S.mics=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind=='audioinput')}catch(e){}
- modal(`<h2>Broadcast & Audio Hardware</h2><p class="mute s">Pick the microphone you broadcast with.</p>${S.mics.length?S.mics.map(d=>`<button class="btn ${S.micId==d.deviceId||(!S.micId&&d.deviceId=='default')?'':'g'} w" data-d="${esc(d.deviceId)}">${esc(d.label||'Microphone')}</button>`).join(''):'<p class="mute c">No microphones found yet. Open Start live and allow microphone access first.</p>'}<button class="btn g w" data-x>Close</button>`,b=>{
+ modal(`<h2>Broadcast & Audio Hardware</h2><p class="mute s">Pick the microphone you broadcast with. Connected headsets switch automatically in Android rooms.</p><button class="btn g w" data-d="">Automatic (phone / headset)</button>${S.mics.length?S.mics.map(d=>`<button class="btn ${S.micId==d.deviceId||(!S.micId&&d.deviceId=='default')?'':'g'} w" data-d="${esc(d.deviceId)}">${esc(d.label||'Microphone')}</button>`).join(''):'<p class="mute c">No microphones found yet. Open Start live and allow microphone access first.</p>'}<button class="btn g w" data-x>Close</button>`,b=>{
   b.querySelector('[data-x]').onclick=closeModal;
-  b.querySelectorAll('[data-d]').forEach(x=>x.onclick=()=>{S.micId=x.dataset.d;try{localStorage.setItem('pw_mic',S.micId)}catch(e){}if(R.mic){R.mic.stop();R.mic=null}micFailed=false;closeModal();toast('Microphone selected');if(S.ov&&S.ov.t=='live'){stopMeter();startMeter()}else if(S.room)syncMic()})})}
+  b.querySelectorAll('[data-d]').forEach(x=>x.onclick=()=>{S.micId=x.dataset.d||null;try{if(S.micId)localStorage.setItem('pw_mic',S.micId);else localStorage.removeItem('pw_mic')}catch(e){}releaseMicrophone();micFailed=false;closeModal();toast('Microphone selected');if(S.ov&&S.ov.t=='live'){stopMeter();startMeter()}else if(S.room)syncMic()})})}
 const fmt=s=>Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0');
 function bubble(x){const mark=S.marks[x.id]||{};return `<div class="message-item ${x.from==S.me.id?'mine':''}" data-message="${esc(x.id)}"><div class="message-main">${messageContent(x)}${mark.pinned||mark.favorite?`<span class="message-label">${mark.pinned?'📌 Pinned ':''}${mark.favorite?'★ Favorite':''}</span>`:''}</div><button class="message-options" data-message-options="${esc(x.id)}" aria-label="Message options">⋯</button></div>`}
 function messageContent(x){const me=x.from==S.me.id;
@@ -654,7 +654,7 @@ function askLeave(next){
  else modal(`<h2>${next?'Switch rooms?':'End this room?'}</h2><p class="mute">${others.length?`“${t}” has ${others.length==1?'1 listener':others.length+' listeners'} and no co-host. The room will close for everyone${next?' before you switch':''}.`:`“${t}” will be closed${next?' before you switch':''}.`}</p><button class="btn rd w" data-e>End room</button><button class="btn g w" data-c>Cancel</button>`,
   b=>{b.querySelector('[data-e]').onclick=()=>go('end');b.querySelector('[data-c]').onclick=closeModal});
 }
-function joinRoom(id){if(S.room&&S.room.id==id)return openOv('room');const j=()=>wsSend({type:'room:join',id});S.room?askLeave(j):j()}
+function joinRoom(id){if(S.room&&S.room.id==id)return openOv('room');const j=async()=>{try{await optionalRoomCall('prepareBluetooth');wsSend({type:'room:join',id})}catch(e){toast(micError(e))}};S.room?askLeave(j):j()}
 
 /* ---------- voice (WebRTC mesh, signaling over WebSocket) ---------- */
 const R={peers:{},mic:null,an:{}};
@@ -705,23 +705,33 @@ if(navigator.connection?.addEventListener)navigator.connection.addEventListener(
 // Capacitor's injected nativePromise/addListener API also works on the remotely hosted pages.
 const androidRoom=()=>window.Capacitor&&window.Capacitor.getPlatform()==='android';
 let nativeQueue=Promise.resolve(),nativeListening=false,notificationWarning=false;
+let routeGeneration=0,micRouteSeen=0,micRouteRequested=false,endedRetryAt=0,endedRetries=0,endedRecoveryTimer=0;
+function audioRouteChanged(data){
+ if(!S.room||!Number.isFinite(data.generation)||data.generation<routeGeneration)return;
+ routeGeneration=data.generation;
+ if(!data.ready)return;
+ if(data.failed)toast('Headset audio could not connect. Reconnect the headset to retry.',null,{key:'audio-route'});
+ if(R.mic&&data.generation>(R.micRoute||0)){clearTimeout(endedRecoveryTimer);endedRecoveryTimer=0;micRouteRequested=true;micFailed=false;syncMic()}
+}
 function roomCall(method,options={}){
  if(!androidRoom())return Promise.resolve({});
  if(!nativeListening){
   window.Capacitor.addListener('RoomPlugin','roomAction',d=>{
    if(!S.room)return;
+   if(d.action==='audioRouteChanged'){audioRouteChanged(d);return}
    if(d.action==='networkChanged'){networkChanged();return}
    if(d.action==='mute')setMute(d.muted);
-   if(d.action==='leave'){
-    // A notification cannot show the host handover dialog while locked: hand to a co-host,
-    // or end the room when no co-host exists, as described in the Android testing notes.
-    doLeave('notification');
-   }
+   if(d.action==='leave')doLeave('notification');
   });
   nativeListening=true;
  }
  const run=()=>window.Capacitor.nativePromise('RoomPlugin',method,options);
+ // Waiting for Bluetooth must never hold up notification Mute or Leave.
+ if(method==='prepareAudioRoute')return run();
  const result=nativeQueue.then(run);nativeQueue=result.catch(()=>{});return result;
+}
+async function optionalRoomCall(method){
+ try{return await roomCall(method)}catch(e){if(/unimplemented|not implemented/i.test((e.code||'')+' '+(e.message||'')))return {};throw e}
 }
 function nativeRoom(action,val){
  const p=action==='stop'?roomCall('stopRoom'):action==='mute'?roomCall('setMuted',{muted:!!val||!R.mic,speaking:iSpeak()}):
@@ -735,16 +745,47 @@ const micError=e=>{
  return e.message||'Could not start room audio. Return to the app and try again.';
 };
 let captureQueue=Promise.resolve();
-function captureMic(){
+function captureMic(expectedEpoch){
  const run=async()=>{
   if(!navigator.mediaDevices?.getUserMedia)throw new Error('Voice needs HTTPS or localhost');
   await roomCall('prepareMicrophone');
-  try{return await navigator.mediaDevices.getUserMedia({audio:micCons()})}
-  catch(e){if(e.name!=='OverconstrainedError')throw e;
-   S.micId=null;try{localStorage.removeItem('pw_mic')}catch(x){}
-   return navigator.mediaDevices.getUserMedia({audio:micCons()});}
+  await optionalRoomCall('prepareBluetooth');
+  let route=await optionalRoomCall('prepareAudioRoute');
+  if(expectedEpoch!==undefined&&(expectedEpoch!==roomEpoch||!iSpeak()))throw Object.assign(new Error('Audio session changed'),{code:'STALE_CAPTURE'});
+  if(route.managed&&route.generation>micRouteSeen){
+   // A saved phone/USB device must not pin capture to the old hardware after a route switch.
+   micRouteSeen=route.generation;S.micId=null;try{localStorage.removeItem('pw_mic')}catch(e){}
+  }
+  const acquire=async()=>{try{return await navigator.mediaDevices.getUserMedia({audio:micCons()})}
+   catch(e){if(e.name!=='OverconstrainedError')throw e;S.micId=null;try{localStorage.removeItem('pw_mic')}catch(x){}return navigator.mediaDevices.getUserMedia({audio:micCons()})}};
+  let stream;
+  try{stream=await acquire()}
+  catch(e){
+   if(!route.managed||!['NotReadableError','AbortError'].includes(e.name))throw e;
+   // Some WebViews finish releasing AudioRecord just after the old track stops.
+   await new Promise(resolve=>setTimeout(resolve,250));route=await optionalRoomCall('prepareAudioRoute');
+   if(expectedEpoch!==undefined&&(expectedEpoch!==roomEpoch||!iSpeak()))throw Object.assign(new Error('Audio session changed'),{code:'STALE_CAPTURE'});
+   stream=await acquire();
+  }
+  stream.whassabiRoute=route.managed?route.generation:0;
+  return stream;
  };
  const result=captureQueue.then(run);captureQueue=result.catch(()=>{});return result;
+}
+function releaseMicrophone(){
+ clearTimeout(endedRecoveryTimer);endedRecoveryTimer=0;
+ const track=R.mic;R.mic=null;R.micRoute=0;
+ if(track){track.onended=null;track.stop()}
+ if(S.me)delete R.an[S.me.id];
+}
+function microphoneEnded(track){
+ if(!S.room||R.mic!==track)return;
+ if(androidRoom()){
+  const now=Date.now();if(now-endedRetryAt>10000){endedRetries=0;endedRetryAt=now}
+  if(++endedRetries<=2){micRouteRequested=true;micFailed=false;clearTimeout(endedRecoveryTimer);endedRecoveryTimer=setTimeout(()=>{endedRecoveryTimer=0;if(S.room&&R.mic===track)syncMic()},350);return}
+ }
+ releaseMicrophone();micFailed=true;S.muted=true;wsSend({type:'room:mute',on:true});
+ nativeRoom('mute',true).catch(e=>toast(micError(e)));toast('Microphone disconnected. Tap Unmute to retry.');
 }
 let micSync=null,micAgain=false,roomEpoch=0,micFailed=false;
 function syncMic(){
@@ -754,38 +795,47 @@ function syncMic(){
   while(micAgain){
    micAgain=false;const epoch=roomEpoch,roomId=S.room?.id;if(!roomId)continue;
    try{
-    if(R.mic?.readyState==='ended'){R.mic=null;micFailed=true;S.muted=true;toast('Microphone disconnected. Tap Unmute to retry.')}
+    if(R.mic?.readyState==='ended'){
+     if(androidRoom()&&!micFailed){if(endedRecoveryTimer)continue;micRouteRequested=true;}
+     else{releaseMicrophone();micFailed=true;S.muted=true;toast('Microphone disconnected. Tap Unmute to retry.')}
+    }
     // A listener starts playback only. Upgrade to microphone FGS after runtime permission.
     await nativeRoom('start',!!R.mic);
     if(epoch!==roomEpoch||S.room?.id!==roomId)continue;
+    if(micRouteRequested&&iSpeak()&&!micFailed){
+     micRouteRequested=false;releaseMicrophone();await audio.syncTracks();
+     if(epoch!==roomEpoch||S.room?.id!==roomId)continue;
+    }
     if(iSpeak()&&!R.mic&&!micFailed){
      await roomCall('prepareMicrophone');
      if(epoch!==roomEpoch||!iSpeak())continue;
      await nativeRoom('start',true);
-     const stream=await captureMic();
+     const stream=await captureMic(epoch);
      if(epoch!==roomEpoch||!iSpeak()){stream.getTracks().forEach(t=>t.stop());continue}
-     R.mic=stream.getAudioTracks()[0];
-     R.mic.enabled=!S.muted;
-     R.mic.onended=()=>{if(S.room){micFailed=true;S.muted=true;R.mic=null;wsSend({type:'room:mute',on:true});nativeRoom('mute',true).catch(e=>toast(micError(e)));toast('Microphone disconnected. Tap Unmute to retry.')}};
-     watch(S.me.id,new MediaStream([R.mic]));
+     if(stream.whassabiRoute&&stream.whassabiRoute<routeGeneration){stream.getTracks().forEach(t=>t.stop());micAgain=true;continue}
+     const track=stream.getAudioTracks()[0];if(!track||track.readyState==='ended'){stream.getTracks().forEach(t=>t.stop());throw Object.assign(new Error('Microphone became unavailable. Tap Unmute to retry.'),{name:'NotReadableError'})}
+     R.mic=track;R.micRoute=stream.whassabiRoute||0;
+     if(R.micRoute>=routeGeneration)micRouteRequested=false;
+     track.enabled=!S.muted;track.onended=()=>microphoneEnded(track);
+     watch(S.me.id,new MediaStream([track]));
     }
-    if(!iSpeak()&&R.mic){R.mic.stop();R.mic=null;delete R.an[S.me.id]}
+    if(!iSpeak()&&R.mic)releaseMicrophone();
     if(R.mic)R.mic.enabled=!S.muted;
     await audio.syncTracks();
     await nativeRoom('mute',S.muted||!iSpeak());
    }catch(e){
     if(epoch!==roomEpoch)continue;
-    micFailed=true;const wasMuted=S.muted;S.muted=true;
-    if(R.mic){R.mic.stop();R.mic=null}
+    if(e.code==='STALE_CAPTURE'){micAgain=true;continue}
+    micFailed=true;const wasMuted=S.muted;S.muted=true;releaseMicrophone();
     if(!wasMuted)wsSend({type:'room:mute',on:true});
-    nativeRoom('mute',true).catch(()=>{});toast(micError(e));
+    nativeRoom('mute',true).catch(e=>toast(micError(e)));toast(micError(e));
    }
    if(S.ov&&S.ov.t=='room')paintOv();else render();
   }
  })().finally(()=>{micSync=null});
  return micSync;
 }
-function cleanup(){clearTimeout(networkTimer);roomEpoch++;micFailed=false;S.invAsk=false;if($('#mb [data-ok]'))closeModal();nativeRoom('stop').catch(e=>toast(micError(e)));Object.keys(R.peers).forEach(drop);if(R.mic){R.mic.stop();R.mic=null}if(S.me)delete R.an[S.me.id];S.room=null;S.roomLeaveToken='';S.chat=[];S.react=0;S.muted=false;S.deaf=false;if(S.ov&&S.ov.t=='room'){dropOv()}render()}
+function cleanup(){clearTimeout(networkTimer);roomEpoch++;micFailed=false;micRouteRequested=false;endedRetries=0;S.invAsk=false;if($('#mb [data-ok]'))closeModal();nativeRoom('stop').catch(e=>toast(micError(e)));Object.keys(R.peers).forEach(drop);releaseMicrophone();S.room=null;S.roomLeaveToken='';S.chat=[];S.react=0;S.muted=false;S.deaf=false;if(S.ov&&S.ov.t=='room'){dropOv()}render()}
 const navigation=window.createAppNavigation({storage:localStorage,origin:location.origin,
  ready:()=>!!S.me&&!!ws&&ws.readyState===1&&booted&&(!S.rooms.some(r=>r.members.some(m=>m.uid===S.me.id))||!!S.room),uid:()=>S.me?.id,
  consumeNative:id=>window.Capacitor.nativePromise('NavigationPlugin','consume',{id}),

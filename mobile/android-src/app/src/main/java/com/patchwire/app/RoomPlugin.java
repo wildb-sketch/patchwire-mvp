@@ -29,10 +29,12 @@ import java.lang.ref.WeakReference;
 
 @CapacitorPlugin(name = "RoomPlugin", permissions = {
     @Permission(alias = "microphone", strings = {Manifest.permission.RECORD_AUDIO}),
-    @Permission(alias = "notifications", strings = {"android.permission.POST_NOTIFICATIONS"})
+    @Permission(alias = "notifications", strings = {"android.permission.POST_NOTIFICATIONS"}),
+    @Permission(alias = "bluetooth", strings = {"android.permission.BLUETOOTH_CONNECT"})
 })
 public class RoomPlugin extends Plugin {
     private boolean notificationAsked = false;
+    private boolean bluetoothAsked = false;
     private boolean destroyed = false;
     private static WeakReference<RoomPlugin> current = new WeakReference<>(null);
 
@@ -78,6 +80,12 @@ public class RoomPlugin extends Plugin {
         plugin.notifyListeners("roomAction", data);
         return true;
     }
+    static void audioRouteChanged(boolean ready, String route, long generation, boolean failed) {
+        RoomPlugin plugin = current.get(); if (plugin == null) return;
+        JSObject data = new JSObject(); data.put("action", "audioRouteChanged"); data.put("ready", ready);
+        data.put("route", route); data.put("generation", generation); data.put("failed", failed);
+        plugin.notifyListeners("roomAction", data);
+    }
 
     private boolean visible() {
         return getActivity().getLifecycle().getCurrentState().isAtLeast(Lifecycle.State.RESUMED);
@@ -94,6 +102,23 @@ public class RoomPlugin extends Plugin {
     @PermissionCallback private void microphoneResult(PluginCall call) {
         if (getPermissionState("microphone") == PermissionState.GRANTED) call.resolve();
         else call.reject("Microphone access denied. Allow Microphone in Android Settings > Apps > Whassabi > Permissions.", "MIC_PERMISSION_DENIED");
+    }
+    @PluginMethod public void prepareBluetooth(PluginCall call) {
+        getActivity().runOnUiThread(() -> {
+            if (Build.VERSION.SDK_INT >= 31 && visible() && !bluetoothAsked && getPermissionState("bluetooth") == PermissionState.PROMPT) {
+                bluetoothAsked = true; requestPermissionForAlias("bluetooth", call, "bluetoothResult");
+            } else bluetoothResult(call);
+        });
+    }
+    @PermissionCallback private void bluetoothResult(PluginCall call) {
+        RoomService.refreshAudioRoute();
+        JSObject result = new JSObject(); result.put("enabled", RoomAudioRoute.bluetoothAllowed(getContext())); call.resolve(result);
+    }
+    @PluginMethod public void prepareAudioRoute(PluginCall call) {
+        getActivity().runOnUiThread(() -> RoomService.prepareAudioRoute((managed, route, generation) -> {
+            JSObject result = new JSObject(); result.put("managed", managed); result.put("route", route); result.put("generation", generation);
+            result.put("bluetoothEnabled", RoomAudioRoute.bluetoothAllowed(getContext())); call.resolve(result);
+        }));
     }
 
     @PluginMethod public void prepareNotifications(PluginCall call) {
@@ -128,6 +153,9 @@ public class RoomPlugin extends Plugin {
             call.reject("Allow microphone access before starting room audio.", "MIC_PERMISSION_DENIED");
             return;
         }
+        if (Build.VERSION.SDK_INT >= 31 && visible() && !bluetoothAsked && getPermissionState("bluetooth") == PermissionState.PROMPT) {
+            bluetoothAsked = true; requestPermissionForAlias("bluetooth", call, "roomBluetoothResult"); return;
+        }
         if (Build.VERSION.SDK_INT >= 33 && visible() && !notificationAsked &&
             getPermissionState("notifications") == PermissionState.PROMPT) {
             notificationAsked = true;
@@ -139,6 +167,7 @@ public class RoomPlugin extends Plugin {
         // Denial must not deny voice. Wait for Activity resume before starting the FGS.
         startWhenReady(call, 0);
     }
+    @PermissionCallback private void roomBluetoothResult(PluginCall call) { startWhenReady(call, 0); }
 
     private void startService(PluginCall call) {
         // Only send the in-memory session to the HTTPS origin currently hosting this WebView.
@@ -218,6 +247,8 @@ public class RoomPlugin extends Plugin {
         }
         call.resolve();
     }
+
+    @Override protected void handleOnResume() { RoomService.refreshAudioRoute(); }
 
     @Override protected void handleOnDestroy() {
         destroyed = true;

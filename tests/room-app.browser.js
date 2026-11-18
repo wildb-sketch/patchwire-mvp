@@ -36,5 +36,25 @@ test('both complete app designs retain microphone, mute, chat and room across ne
  await guest.evaluate(()=>wsSend({type:'room:chat',t:'chat survived handover'}));
  await host.waitForFunction(()=>S.chat.some(m=>m.t==='chat survived handover'));
  await guest.evaluate(()=>setMute(false));await guest.waitForFunction(()=>R.mic.enabled&&!S.muted);
+ // Simulate native headset confirmations with real Chromium captures and established RTP senders.
+ // This exercises replacement media, not an actual Bluetooth radio or Android audio driver.
+ const hostId=await host.evaluate(()=>S.me.id),original=await guest.evaluate(id=>{
+  window.routePeer=R.peers[id].pc;window.routeSender=window.routePeer.getTransceivers().find(t=>t.sender.track?.kind==='audio').sender;
+  window.nativeRoute={managed:true,generation:0,route:'speaker'};
+  window.Capacitor={getPlatform:()=>'android',addListener:(plugin,event,fn)=>{if(plugin==='RoomPlugin'&&event==='roomAction')window.routeAction=fn;return Promise.resolve()},nativePromise:async(plugin,method)=>method==='prepareAudioRoute'?window.nativeRoute:{notificationsEnabled:true,enabled:true}};
+  return{room:S.room.id,leaveToken:S.roomLeaveToken};
+ },hostId);
+ await guest.evaluate(()=>roomCall('prepareBluetooth'));
+ const packets=()=>host.evaluate(async id=>{const pc=R.peers[id]?.pc;if(!pc)return 0;return [...(await pc.getStats()).values()].filter(s=>s.type==='inbound-rtp'&&(s.kind==='audio'||s.mediaType==='audio')).reduce((n,s)=>n+(s.packetsReceived||0),0)},guestId);
+ for(const [generation,route,muted] of [[1,'bluetooth',false],[2,'wired',true],[3,'speaker',false]]){
+  const previous=await guest.evaluate(()=>R.mic.id),count=await packets();
+  await guest.evaluate(({generation,route,muted})=>{setMute(muted);window.nativeRoute={managed:true,generation,route};window.routeAction({action:'audioRouteChanged',ready:false,generation,route});window.routeAction({action:'audioRouteChanged',ready:true,generation,route})},{generation,route,muted});
+  await guest.waitForFunction(({previous,generation})=>R.mic&&R.mic.id!==previous&&R.micRoute===generation,{previous,generation});
+  const state=await guest.evaluate(id=>({room:S.room.id,leaveToken:S.roomLeaveToken,muted:S.muted,enabled:R.mic.enabled,samePeer:R.peers[id].pc===window.routePeer,sameSender:window.routeSender===window.routePeer.getTransceivers().find(t=>t.sender.track?.kind==='audio').sender}),hostId);
+  assert.deepEqual(state,{...original,muted,enabled:!muted,samePeer:true,sameSender:true});
+  if(muted){await guest.evaluate(()=>window.routeAction({action:'mute',muted:false}));await guest.waitForFunction(()=>R.mic.enabled&&!S.muted)}
+  const deadline=Date.now()+10000;while(await packets()<=count+3&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
+  assert(await packets()>count+3,'Fresh RTP must arrive after each microphone route replacement');
+ }
  assert.deepEqual(errors,[]);
 });

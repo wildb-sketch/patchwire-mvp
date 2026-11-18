@@ -17,10 +17,16 @@ for (const perm of perms) {
   const tag = `<uses-permission android:name="android.permission.${perm}" />`;
   if (!x.includes(`android.permission.${perm}`)) x = x.replace('<application', tag + '\n    <application');
 }
-
 // microphone foreground service type
 const micType = '<uses-feature android:name="android.hardware.microphone" android:required="false" />';
 if (!x.includes('android.hardware.microphone')) x = x.replace('<application', micType + '\n    <application');
+
+// Paired headsets only: no discovery, scanning or location permission is needed.
+for (const [perm, attributes] of [['BLUETOOTH', ' android:maxSdkVersion="30"'], ['BLUETOOTH_CONNECT', '']]) {
+  x = x.replace(new RegExp('<uses-permission\\b[^>]*android:name="android\\.permission\\.' + perm + '"[^>]*/>', 'g'), '');
+  x = x.replace('<application', `<uses-permission android:name="android.permission.${perm}"${attributes} />\n    <application`);
+}
+
 
 // network security config
 if (!x.includes('android:networkSecurityConfig=')) x = x.replace(
