@@ -58,7 +58,7 @@ test('stage changes render during blocked Android startup; host removal explains
   await guest.locator('#hand').waitFor({ state: 'visible', timeout: 2500 });
   assert.equal(await guest.evaluate(() => window.demotedTrack.readyState), 'ended'); assert.equal(await guest.evaluate(() => R.mic), null);
   // Output choice must bypass the unresolved native start and must not open a listener mic.
-  await guest.evaluate(() => micSheet()); await guest.locator('[data-audio-output="speaker"]').click();
+  await guest.click('#dots'); await guest.getByRole('menuitem', { name: 'Audio output', exact: true }).click(); await guest.locator('[data-audio-output="speaker"]').click();
   await guest.waitForFunction(() => document.querySelector('[data-audio-output="speaker"]')?.getAttribute('aria-pressed') === 'true');
   assert.equal(await guest.evaluate(() => R.mic), null); assert.equal(await guest.evaluate(() => window.nativeOutput), 'speaker');
   await guest.evaluate(() => closeModal());
