@@ -23,6 +23,7 @@ import org.robolectric.annotation.Implements;
 import org.robolectric.annotation.RealObject;
 import org.robolectric.shadows.AudioDeviceInfoBuilder;
 import org.robolectric.shadows.ShadowAudioManager;
+import org.robolectric.util.ReflectionHelpers;
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
@@ -37,6 +38,9 @@ public class RoomAudioStatusTest {
         Shadows.shadowOf(context).grantPermissions(Manifest.permission.RECORD_AUDIO, Manifest.permission.BLUETOOTH_CONNECT);
         AudioManager audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE); shadow = Shadows.shadowOf(audio);
         phone = AudioDeviceInfoBuilder.newBuilder().setType(AudioDeviceInfo.TYPE_BUILTIN_MIC).build();
+        // Robolectric 4.13's builder only maps output types. Supply the real built-in input port.
+        ReflectionHelpers.setField(ReflectionHelpers.getField(phone, "mPort"), "mType", 0x80000004);
+        assertEquals(AudioDeviceInfo.TYPE_BUILTIN_MIC, phone.getType());
         bluetooth = AudioDeviceInfoBuilder.newBuilder().setType(AudioDeviceInfo.TYPE_BLUETOOTH_SCO).build();
         shadow.setAvailableCommunicationDevices(Arrays.asList(bluetooth)); audio.setCommunicationDevice(bluetooth);
     }
