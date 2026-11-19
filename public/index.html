@@ -447,7 +447,7 @@ function pLive(){
 function openEdit(){const r=S.room;if(!r||r.host!=S.me.id)return;S.ef={title:r.title,desc:r.desc||'',topic:r.topic,cover:r.cover||0,aud:r.audience||'everyone'};S.ov={t:'live',edit:true};paintOv();mini()}
 let meter=null,actx=null;const AC=window.AudioContext||window.webkitAudioContext;
 const ctxA=()=>{actx=actx||new AC();if(actx.state=='suspended')actx.resume();return actx};
-const micCons=()=>({echoCancellation:true,noiseSuppression:true,...(S.micId?{deviceId:{exact:S.micId}}:{})});
+const micCons=()=>({echoCancellation:true,noiseSuppression:true,autoGainControl:false,...(S.micId?{deviceId:{exact:S.micId}}:{})});
 let meterPending=false,meterEpoch=0;
 async function startMeter(){
  if(meterPending)return;meterPending=true;const epoch=meterEpoch;
@@ -461,9 +461,11 @@ async function startMeter(){
  catch(e){const lb=$('#mlab');if(lb)lb.textContent=micError(e)}finally{meterPending=false}
 }
 function stopMeter(){meterEpoch++;if(meter){clearInterval(meter.id);meter.st.getTracks().forEach(t=>t.stop());meter=null}}
+function audioStatusText(status){const labels={bluetooth:'Bluetooth headset microphone',phone:'Phone microphone',wired:'Wired / USB microphone',other:'Other microphone',inactive:'Microphone not recording',permission:'Microphone permission is off',multiple:'More than one microphone is active',unknown:'Not yet reported by Android'};return `<div class="card s" id="audio-status"><b>Active microphone:</b> ${esc(labels[status.input]||labels.unknown)}<br><span class="mute">Output: ${esc(({bluetooth:'Bluetooth headset',wired:'Wired / USB headset',speaker:'Phone',system:'System default'})[status.output]||'System default')}${status.silenced?' · Android has silenced capture':''}</span></div>`}
 async function micSheet(){
- try{if(!S.mics.length)S.mics=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind=='audioinput')}catch(e){}
- modal(`<h2>Broadcast & Audio Hardware</h2><p class="mute s">Pick the microphone you broadcast with. Connected headsets switch automatically in Android rooms.</p><button class="btn g w" data-d="">Automatic (phone / headset)</button>${S.mics.length?S.mics.map(d=>`<button class="btn ${S.micId==d.deviceId||(!S.micId&&d.deviceId=='default')?'':'g'} w" data-d="${esc(d.deviceId)}">${esc(d.label||'Microphone')}</button>`).join(''):'<p class="mute c">No microphones found yet. Open Start live and allow microphone access first.</p>'}<button class="btn g w" data-x>Close</button>`,b=>{
+ let deviceStatus={};if(androidRoom())try{deviceStatus=await optionalRoomCall('getAudioStatus')}catch(e){}
+ try{S.mics=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind=='audioinput')}catch(e){}
+ modal(`<h2>Broadcast & Audio Hardware</h2><p class="mute s">Pick the microphone you broadcast with. Automatic uses the connected headset when its call microphone is available.</p>${androidRoom()?audioStatusText(deviceStatus):''}<button class="btn g w" data-d="">Automatic (phone / headset)</button>${S.mics.length?S.mics.map(d=>`<button class="btn ${S.micId==d.deviceId||(!S.micId&&d.deviceId=='default')?'':'g'} w" data-d="${esc(d.deviceId)}">${esc(d.label||'Microphone')}</button>`).join(''):'<p class="mute c">No microphones found yet. Open Start live and allow microphone access first.</p>'}<button class="btn g w" data-x>Close</button>`,b=>{
   b.querySelector('[data-x]').onclick=closeModal;
   b.querySelectorAll('[data-d]').forEach(x=>x.onclick=()=>{S.micId=x.dataset.d||null;try{if(S.micId)localStorage.setItem('pw_mic',S.micId);else localStorage.removeItem('pw_mic')}catch(e){}releaseMicrophone();micFailed=false;closeModal();toast('Microphone selected');if(S.ov&&S.ov.t=='live'){stopMeter();startMeter()}else if(S.room)syncMic()})})}
 const fmt=s=>Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0');
@@ -728,7 +730,7 @@ function roomCall(method,options={}){
  }
  const run=()=>window.Capacitor.nativePromise('RoomPlugin',method,options);
  // Waiting for Bluetooth must never hold up notification Mute or Leave.
- if(method==='prepareAudioRoute')return run();
+ if(method==='prepareAudioRoute'||method==='getAudioStatus')return run();
  const result=nativeQueue.then(run);nativeQueue=result.catch(()=>{});return result;
 }
 async function optionalRoomCall(method){
@@ -745,6 +747,16 @@ const micError=e=>{
  if(e.name==='NotReadableError'||e.name==='AbortError')return 'Microphone is busy or unavailable. Close other recording apps and try again.';
  return e.message||'Could not start room audio. Return to the app and try again.';
 };
+function headsetInput(devices,names=[]){
+ const norm=value=>String(value||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+ const known=names.map(norm).filter(name=>name.length>=4);
+ return devices.filter(device=>device.kind==='audioinput'&&device.deviceId&&!['default','communications'].includes(device.deviceId)).map(device=>{
+  const label=String(device.label||''),normalized=norm(label);
+  const score=/bluetooth|\bsco\b|hands[- ]?free|airpods|buds/i.test(label)?100:known.some(name=>normalized.includes(name))?80:/headset|wireless|headphones/i.test(label)?50:0;
+  return {device,score};
+ }).filter(item=>item.score>0).sort((a,b)=>b.score-a.score)[0]?.device;
+}
+async function availableInputs(){try{return await navigator.mediaDevices.enumerateDevices()}catch(e){return []}}
 let captureQueue=Promise.resolve();
 function captureMic(expectedEpoch){
  const run=async()=>{
@@ -757,8 +769,13 @@ function captureMic(expectedEpoch){
    // A saved phone/USB device must not pin capture to the old hardware after a route switch.
    micRouteSeen=route.generation;S.micId=null;try{localStorage.removeItem('pw_mic')}catch(e){}
   }
-  const acquire=async()=>{try{return await navigator.mediaDevices.getUserMedia({audio:micCons()})}
-   catch(e){if(e.name!=='OverconstrainedError')throw e;S.micId=null;try{localStorage.removeItem('pw_mic')}catch(x){}return navigator.mediaDevices.getUserMedia({audio:micCons()})}};
+  const automaticHeadset=route.managed&&route.route==='bluetooth'&&!S.micId;
+  const status=automaticHeadset?await optionalRoomCall('getAudioStatus'):{};
+  const names=[...(status.headsetNames||[]),status.outputName||''];
+  let preferred=automaticHeadset?headsetInput(await availableInputs(),names):null,rejectedHeadset=false;
+  const checkCapture=()=>{if(expectedEpoch!==undefined&&(expectedEpoch!==roomEpoch||!iSpeak()))throw Object.assign(new Error('Audio session changed'),{code:'STALE_CAPTURE'})};
+  const acquire=async()=>{checkCapture();try{return await navigator.mediaDevices.getUserMedia({audio:{...micCons(),...(preferred?{deviceId:{exact:preferred.deviceId}}:{})}})}
+   catch(e){if(e.name!=='OverconstrainedError')throw e;checkCapture();if(preferred)rejectedHeadset=true;preferred=null;S.micId=null;try{localStorage.removeItem('pw_mic')}catch(x){}return navigator.mediaDevices.getUserMedia({audio:micCons()})}};
   let stream;
   try{stream=await acquire()}
   catch(e){
@@ -767,6 +784,17 @@ function captureMic(expectedEpoch){
    await new Promise(resolve=>setTimeout(resolve,250));route=await optionalRoomCall('prepareAudioRoute');
    if(expectedEpoch!==undefined&&(expectedEpoch!==roomEpoch||!iSpeak()))throw Object.assign(new Error('Audio session changed'),{code:'STALE_CAPTURE'});
    stream=await acquire();
+  }
+  // Device labels may only become visible after the first origin-level capture grant.
+  if(automaticHeadset&&!preferred&&!rejectedHeadset){
+   preferred=headsetInput(await availableInputs(),names);
+   if(preferred&&stream.getAudioTracks()[0]?.getSettings?.().deviceId!==preferred.deviceId){
+    stream.getTracks().forEach(track=>track.stop());
+    if(expectedEpoch!==undefined&&(expectedEpoch!==roomEpoch||!iSpeak()))throw Object.assign(new Error('Audio session changed'),{code:'STALE_CAPTURE'});
+    try{stream=await acquire()}catch(e){if(!['NotReadableError','AbortError'].includes(e.name))throw e;await new Promise(resolve=>setTimeout(resolve,250));
+     if(expectedEpoch!==undefined&&(expectedEpoch!==roomEpoch||!iSpeak()))throw Object.assign(new Error('Audio session changed'),{code:'STALE_CAPTURE'});
+     stream=await acquire();}
+   }
   }
   stream.whassabiRoute=route.managed?route.generation:0;
   return stream;

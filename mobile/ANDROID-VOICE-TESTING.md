@@ -10,7 +10,7 @@ Native route readiness is asynchronous: a successful routing request alone does 
 
 Both web designs replace their microphone on a confirmed native route change, retaining the existing WebRTC peers/senders and the current user mute state. Old tracks are stopped with their handlers detached; late captures are discarded after another device change, demotion or Leave. Hardware-ended Android tracks have a short device-change debounce and bounded recovery, with one retry for transient capture-busy errors. Permission refusals still require explicit Unmute. Stale saved device IDs reset on a new native route; **Broadcast & Audio Hardware → Automatic (phone / headset)** also clears an override. Older APKs continue using the existing phone-capture path until upgraded.
 
-Automated checks cover Android 9 legacy SCO and Android 14 communication-device routing, preconnected HFP/LE headsets, hot-plug/unplug, wired/USB priority, denied permissions, delayed confirmation, timeouts and cleanup. Real Chromium peers additionally exchange fresh RTP after simulated native route changes while retaining the same peer and sender. These checks do not emulate a Bluetooth radio, earbud firmware or an Android audio driver.
+Automated checks cover Android 9 legacy SCO, Android 12 SCO confirmation and Android 14 communication-device routing, preconnected HFP/LE headsets, hot-plug/unplug, wired/USB priority, denied permissions, delayed confirmation, timeouts and cleanup. Separate recording-device checks distinguish a selected Bluetooth output from an active phone microphone and leave unavailable input data unverified. Real Chromium peers additionally exchange fresh RTP after simulated native route changes while retaining the same peer and sender. These checks do not emulate a Bluetooth radio, earbud firmware or an Android audio driver.
 
 On two real phones, with the second person confirming actual received speech:
 
@@ -44,6 +44,12 @@ From `mobile/`: `npm ci && npm run prepare-android && npm run apk`. Requires JDK
 Validation in the development environment: 38 tests passed; JDK 17 / SDK 34 `assembleDebug` and `lintDebug` passed (0 lint errors, 22 warnings, including generated template/resource warnings and the intentionally service-scoped wake lock). Cloudflare `wrangler deploy --dry-run` passed without deploying. Physical microphone transmission, Android permission dialogs, and lock-screen notification actions remain unverified on hardware.
 
 ## Real-device acceptance (two participants)
+
+For the affected Samsung Note 10+ on Android 12, the route now explicitly starts and confirms the classic Bluetooth SCO call-audio link before WebView capture. Selecting Bluetooth output alone no longer releases capture on Android 12/12L. Android 13+ keeps the communication-device API path; older Android keeps its existing SCO path. Connection failure has a bounded fallback and leaving releases routing.
+
+Automatic capture also selects a browser-exposed headset microphone when available, including enumeration after the first microphone permission grant. Echo cancellation and noise suppression remain enabled; automatic gain control is explicitly disabled to avoid boosting distant speech. These constraints remain browser/driver dependent.
+
+The Broadcast & Audio Hardware panel reports the actual recording input separately from selected communication output. Unknown recording-device information stays unknown; selecting Bluetooth output never proves its microphone is recording. Device names and recording diagnostics stay local. On the Note 10+, check both directions with earbuds connected before joining and connected mid-room, then unplug/reconnect while muted and while speaking. Check that Active microphone says Bluetooth headset microphone; if it says Phone microphone, the input is still wrong even if output works. Physical hardware validation is required.
 
 Use Android 13 and 14+ if available, including the original affected phone. Record Android version, manufacturer, and Android System WebView version. Test both designs with the same build and web revision.
 

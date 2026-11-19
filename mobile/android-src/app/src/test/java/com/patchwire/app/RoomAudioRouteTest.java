@@ -120,6 +120,19 @@ public class RoomAudioRouteTest {
         routes.start(); idle(300); assertTrue(audio.isSpeakerphoneOn()); routes.stop();
         assertFalse(audio.isSpeakerphoneOn()); assertEquals(AudioManager.MODE_NORMAL, audio.getMode());
     }
+    @Test @Config(sdk = 31) public void android12SelectedBluetoothOutputAloneDoesNotConfirmTheHeadsetMicrophoneLink() {
+        available(speaker,bluetooth);routes.start();assertEquals(AudioDeviceInfo.TYPE_BLUETOOTH_SCO,audio.getCommunicationDevice().getType());
+        assertNull(ready());idle(500);assertNull(ready());
+        context.sendBroadcast(new Intent(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED).putExtra(AudioManager.EXTRA_SCO_AUDIO_STATE,AudioManager.SCO_AUDIO_STATE_CONNECTED));idle(1);
+        assertEquals("true:bluetooth",ready());assertTrue(audio.isBluetoothScoOn());
+        routes.stop();assertFalse(audio.isBluetoothScoOn());assertEquals(AudioManager.MODE_NORMAL,audio.getMode());
+    }
+    @Test @Config(sdk = 31) public void android12ScoLossRequiresAConfirmedReconnectionAndHasABoundedFallback() {
+        available(speaker,bluetooth);routes.start();
+        context.sendBroadcast(new Intent(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED).putExtra(AudioManager.EXTRA_SCO_AUDIO_STATE,AudioManager.SCO_AUDIO_STATE_CONNECTED));idle(1);assertEquals("true:bluetooth",ready());
+        context.sendBroadcast(new Intent(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED).putExtra(AudioManager.EXTRA_SCO_AUDIO_STATE,AudioManager.SCO_AUDIO_STATE_DISCONNECTED));idle(1);assertNull(ready());
+        idle(31000);assertEquals("true:speaker",ready());assertFalse(audio.isBluetoothScoOn());
+    }
     @Implements(AudioManager.class) public static class DelayedAudio extends ShadowAudioManager {
         boolean delay = true;
         private AudioDeviceInfo requested;
