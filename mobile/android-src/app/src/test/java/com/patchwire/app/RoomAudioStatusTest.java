@@ -79,6 +79,14 @@ public class RoomAudioStatusTest {
         audio.setCommunicationDevice(earpiece); assertEquals("earpiece", RoomAudioStatus.read(context).getString("output"));
         audio.setCommunicationDevice(speaker); assertEquals("speaker", RoomAudioStatus.read(context).getString("output"));
     }
+    @Test @Config(sdk = 31) public void android12SpeakerphoneOverrideDoesNotReportStaleBluetoothAsTheOutput() {
+        AudioManager audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        audio.setSpeakerphoneOn(true);
+        JSObject status = RoomAudioStatus.read(context);
+        assertEquals("speaker", status.getString("output")); assertTrue(status.getBool("speakerphoneOn"));
+        assertEquals(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, status.getInteger("communicationType").intValue());
+        assertFalse(status.has("outputName")); assertFalse(status.getBool("inputVerified"));
+    }
     @Implements(AudioRecordingConfiguration.class) public static class RecordingShadow {
         @RealObject AudioRecordingConfiguration real;
         @Implementation protected AudioDeviceInfo getAudioDevice() { return inputs.get(real.getClientAudioSessionId()); }

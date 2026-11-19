@@ -29,6 +29,7 @@ function harness(file, { android = true, capture = async () => stream(), native 
   $: () => null, closeModal() {}, dropOv() {}, drop() {}
  });
  const start = html.indexOf("// Capacitor's injected");
+ context.window.createRoomDiagnostics=require('../public/room-diagnostics');
  const end = html.indexOf('const navigation=', start);
  vm.runInContext(html.match(/^const micCons=.*$/m)[0], context);
  vm.runInContext(html.slice(start, end), context);
@@ -274,14 +275,14 @@ for (const file of ['index.html', 'neon.html']) {
   h.context.setTimeout = (callback,ms) => {if(ms===250)queueMicrotask(callback)}; h.context.S.muted = true;
   await h.context.syncMic(); assert.equal(captures, 2); assert(h.context.R.mic); assert.equal(h.context.S.muted, true); assert.equal(h.context.R.mic.enabled, false);
  });
- test(`${file}: Android headset input is selected explicitly after device labels become available, with gain boost off`, async () => {
+ test(`${file}: Android headset input is selected explicitly after device labels become available, with standard speech gain control enabled`, async () => {
   let captures=0;const streams=[],constraints=[];
   const h=harness(file,{native:async method=>method==='prepareAudioRoute'?{managed:true,generation:1,route:'bluetooth'}:method==='getAudioStatus'?{headsetNames:['Galaxy Buds2'],outputName:'Galaxy Buds2'}:{},capture:async options=>{
    constraints.push(options.audio);captures++;const s=stream();s.track.getSettings=()=>({deviceId:options.audio.deviceId?.exact||'phone-input'});streams.push(s);return s;
   }});
   h.context.navigator.mediaDevices.enumerateDevices=async()=>captures?[{kind:'audioinput',deviceId:'phone-input',label:'Built-in microphone'},{kind:'audioinput',deviceId:'bud-input',label:'Galaxy Buds2 Bluetooth Headset'}]:[];
   await h.context.syncMic();assert.equal(captures,2);assert.equal(streams[0].track.readyState,'ended');assert.equal(h.context.R.mic,streams[1].track);
-  assert.equal(constraints[1].deviceId.exact,'bud-input');assert(constraints.every(c=>c.autoGainControl===false&&c.echoCancellation===true&&c.noiseSuppression===true));
+  assert.equal(constraints[1].deviceId.exact,'bud-input');assert(constraints.every(c=>c.autoGainControl===true&&c.echoCancellation===true&&c.noiseSuppression===true));
  });
  test(`${file}: leaving during headset diagnostics cannot open a new microphone`, async () => {
   const pending=deferred();let inspecting=false,captures=0;

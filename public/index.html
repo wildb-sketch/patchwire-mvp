@@ -207,6 +207,7 @@ nav b.bg{top:7px;right:10px}
 <body>
 <div id="app"><header class="hd" id="hd"></header><main id="mn"></main><div class="mini" id="mini" hidden></div><nav id="nv"></nav><div class="ov" id="ov" hidden><div id="ob"></div></div><div class="md" id="md" hidden><div id="mb"></div></div></div>
 <script src="/room-audio.js"></script>
+<script src="/room-diagnostics.js"></script>
 <script src="/room-heartbeat.js"></script>
 <script src="/notices.js"></script>
 <script src="/chat-tools.js"></script>
@@ -447,7 +448,7 @@ function pLive(){
 function openEdit(){const r=S.room;if(!r||r.host!=S.me.id)return;S.ef={title:r.title,desc:r.desc||'',topic:r.topic,cover:r.cover||0,aud:r.audience||'everyone'};S.ov={t:'live',edit:true};paintOv();mini()}
 let meter=null,actx=null;const AC=window.AudioContext||window.webkitAudioContext;
 const ctxA=()=>{actx=actx||new AC();if(actx.state=='suspended')actx.resume();return actx};
-const micCons=()=>({echoCancellation:true,noiseSuppression:true,autoGainControl:false,...(S.micId?{deviceId:{exact:S.micId}}:{})});
+const micCons=()=>({echoCancellation:true,noiseSuppression:true,autoGainControl:true,...(S.micId?{deviceId:{exact:S.micId}}:{})});
 let meterPending=false,meterEpoch=0;
 async function startMeter(){
  if(meterPending)return;meterPending=true;const epoch=meterEpoch;
@@ -465,8 +466,9 @@ function audioStatusText(status){const labels={bluetooth:'Bluetooth headset micr
 async function micSheet(){
  let deviceStatus={};if(androidRoom())try{deviceStatus=await optionalRoomCall('getAudioStatus')}catch(e){}
  try{S.mics=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind=='audioinput')}catch(e){}
- modal(`<h2>Broadcast & Audio Hardware</h2><p class="mute s">Pick the microphone you broadcast with. Automatic uses the connected headset when its call microphone is available.</p>${androidRoom()?audioStatusText(deviceStatus)+`<p class="mute s">Room audio output</p>${[['auto','Automatic (headsets)'],['speaker','Phone loudspeaker'],['bluetooth','Bluetooth audio']].map(([mode,label])=>`<button class="btn ${(deviceStatus.outputMode||'auto')===mode?'':'g'} w" data-audio-output="${mode}" aria-pressed="${(deviceStatus.outputMode||'auto')===mode}">${label}</button>`).join('')}<p class="mute s">Microphone</p>`:''}<button class="btn g w" data-d="">Automatic (phone / headset)</button>${S.mics.length?S.mics.map(d=>`<button class="btn ${S.micId==d.deviceId||(!S.micId&&d.deviceId=='default')?'':'g'} w" data-d="${esc(d.deviceId)}">${esc(d.label||'Microphone')}</button>`).join(''):'<p class="mute c">No microphones found yet. Open Start live and allow microphone access first.</p>'}<button class="btn g w" data-x>Close</button>`,b=>{
+ modal(`<h2>Broadcast & Audio Hardware</h2><p class="mute s">Pick the microphone you broadcast with. Automatic uses the connected headset when its call microphone is available.</p>${androidRoom()?audioStatusText(deviceStatus)+`<p class="mute s">Room audio output</p>${[['auto','Automatic (headsets)'],['speaker','Phone loudspeaker'],['bluetooth','Bluetooth audio']].map(([mode,label])=>`<button class="btn ${(deviceStatus.outputMode||'auto')===mode?'':'g'} w" data-audio-output="${mode}" aria-pressed="${(deviceStatus.outputMode||'auto')===mode}">${label}</button>`).join('')}<p class="mute s">Microphone</p>`:''}<button class="btn g w" data-d="">Automatic (phone / headset)</button>${S.mics.length?S.mics.map(d=>`<button class="btn ${S.micId==d.deviceId||(!S.micId&&d.deviceId=='default')?'':'g'} w" data-d="${esc(d.deviceId)}">${esc(d.label||'Microphone')}</button>`).join(''):'<p class="mute c">No microphones found yet. Open Start live and allow microphone access first.</p>'}<button class="btn g w" id="copy-audio-diagnostics">Copy audio diagnostics</button><button class="btn g w" data-x>Close</button>`,b=>{
   b.querySelector('[data-x]').onclick=closeModal;
+  b.querySelector('#copy-audio-diagnostics').onclick=async()=>{try{await roomDiagnostics.copy();toast('Audio diagnostics copied. Share it only when you want help troubleshooting.')}catch(e){toast('Could not copy audio diagnostics.')}};
   b.querySelectorAll('[data-audio-output]').forEach(button=>button.onclick=()=>chooseAudioOutput(button.dataset.audioOutput));
   b.querySelectorAll('[data-d]').forEach(x=>x.onclick=()=>{S.micId=x.dataset.d||null;try{if(S.micId)localStorage.setItem('pw_mic',S.micId);else localStorage.removeItem('pw_mic')}catch(e){}releaseMicrophone();micFailed=false;closeModal();toast('Microphone selected');if(S.ov&&S.ov.t=='live'){stopMeter();startMeter()}else if(S.room)syncMic()})})}
 const fmt=s=>Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0');
@@ -881,6 +883,8 @@ function syncMic(){
  return micSync;
 }
 function cleanup(){clearTimeout(networkTimer);roomEpoch++;micFailed=false;micRouteRequested=false;endedRetries=0;S.invAsk=false;if($('#mb [data-ok]'))closeModal();nativeRoom('stop').catch(e=>toast(micError(e)));Object.keys(R.peers).forEach(drop);releaseMicrophone();S.room=null;S.roomLeaveToken='';S.chat=[];S.react=0;S.muted=false;S.deaf=false;if(S.ov&&S.ov.t=='room'){dropOv()}render()}
+const roomDiagnostics=window.createRoomDiagnostics({nativeStatus:()=>androidRoom()?optionalRoomCall('getAudioStatus'):Promise.resolve({}),track:()=>R.mic,peers:()=>R.peers,userAgent:()=>navigator.userAgent,
+ copy:text=>navigator.clipboard.writeText(text)});
 const navigation=window.createAppNavigation({storage:localStorage,origin:location.origin,
  ready:()=>!!S.me&&!!ws&&ws.readyState===1&&booted&&(!S.rooms.some(r=>r.members.some(m=>m.uid===S.me.id))||!!S.room),uid:()=>S.me?.id,
  consumeNative:id=>window.Capacitor.nativePromise('NavigationPlugin','consume',{id}),
