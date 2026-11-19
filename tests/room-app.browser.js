@@ -45,8 +45,22 @@ test('both complete app designs retain microphone, mute, chat and room across ne
   return{room:S.room.id,leaveToken:S.roomLeaveToken};
  },hostId);
  await guest.evaluate(()=>roomCall('prepareBluetooth'));
+ // Start a fresh capture while Android still reports a pending route. Confirm it from
+ // inside getUserMedia to exercise the capture/routing dependency with real media.
+ const bootstrap=await guest.evaluate(async()=>{
+  releaseMicrophone();window.nativeRoute={managed:true,generation:0,route:'system'};
+  const capture=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);let count=0;
+  navigator.mediaDevices.getUserMedia=async constraints=>{
+   const stream=await capture(constraints);
+   if(++count===1){window.nativeRoute={managed:true,generation:1,route:'speaker'};window.routeAction({action:'audioRouteChanged',ready:true,generation:1,route:'speaker'})}
+   return stream;
+  };
+  try{await syncMic();return {count,route:R.micRoute,live:R.mic?.readyState,muted:S.muted}}
+  finally{navigator.mediaDevices.getUserMedia=capture}
+ });
+ assert.deepEqual(bootstrap,{count:2,route:1,live:'live',muted:false});
  const packets=()=>host.evaluate(async id=>{const pc=R.peers[id]?.pc;if(!pc)return 0;return [...(await pc.getStats()).values()].filter(s=>s.type==='inbound-rtp'&&(s.kind==='audio'||s.mediaType==='audio')).reduce((n,s)=>n+(s.packetsReceived||0),0)},guestId);
- for(const [generation,route,muted] of [[1,'bluetooth',false],[2,'wired',true],[3,'speaker',false]]){
+ for(const [generation,route,muted] of [[2,'bluetooth',false],[3,'wired',true],[4,'speaker',false]]){
   const previous=await guest.evaluate(()=>R.mic.id),count=await packets();
   await guest.evaluate(({generation,route,muted})=>{setMute(muted);window.nativeRoute={managed:true,generation,route};window.routeAction({action:'audioRouteChanged',ready:false,generation,route});window.routeAction({action:'audioRouteChanged',ready:true,generation,route})},{generation,route,muted});
   await guest.waitForFunction(({previous,generation})=>R.mic&&R.mic.id!==previous&&R.micRoute===generation,{previous,generation});

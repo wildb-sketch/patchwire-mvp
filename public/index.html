@@ -714,7 +714,7 @@ function audioRouteChanged(data){
  if(!data.ready)return;
  if(data.generation>confirmedRouteGeneration){confirmedRouteGeneration=data.generation;endedRetries=0;endedRetryAt=Date.now()}
  if(data.failed)toast('Headset audio could not connect. Reconnect the headset to retry.',null,{key:'audio-route'});
- if(R.mic&&data.generation>(R.micRoute||0)){clearTimeout(endedRecoveryTimer);endedRecoveryTimer=0;micRouteRequested=true;micFailed=false;syncMic()}
+ if(iSpeak()&&!micFailed&&data.generation>(R.micRoute||0)&&(R.mic||micSync)){clearTimeout(endedRecoveryTimer);endedRecoveryTimer=0;micRouteRequested=true;syncMic()}
 }
 function roomCall(method,options={}){
  if(!androidRoom())return Promise.resolve({});
@@ -735,6 +735,10 @@ function roomCall(method,options={}){
 }
 async function optionalRoomCall(method){
  try{return await roomCall(method)}catch(e){if(/unimplemented|not implemented/i.test((e.code||'')+' '+(e.message||'')))return {};throw e}
+}
+async function captureRoute(){
+ // Older installed APKs can wait for a route that needs active capture to finish connecting.
+ let timer;try{return await Promise.race([optionalRoomCall('prepareAudioRoute'),new Promise(resolve=>{timer=setTimeout(()=>resolve({}),800)})])}finally{clearTimeout(timer)}
 }
 function nativeRoom(action,val){
  const p=action==='stop'?roomCall('stopRoom'):action==='mute'?roomCall('setMuted',{muted:!!val||!R.mic,speaking:iSpeak()}):
@@ -763,7 +767,7 @@ function captureMic(expectedEpoch){
   if(!navigator.mediaDevices?.getUserMedia)throw new Error('Voice needs HTTPS or localhost');
   await roomCall('prepareMicrophone');
   await optionalRoomCall('prepareBluetooth');
-  let route=await optionalRoomCall('prepareAudioRoute');
+  let route=await captureRoute();
   if(expectedEpoch!==undefined&&(expectedEpoch!==roomEpoch||!iSpeak()))throw Object.assign(new Error('Audio session changed'),{code:'STALE_CAPTURE'});
   if(route.managed&&route.generation>micRouteSeen){
    // A saved phone/USB device must not pin capture to the old hardware after a route switch.
@@ -774,14 +778,14 @@ function captureMic(expectedEpoch){
   const names=[...(status.headsetNames||[]),status.outputName||''];
   let preferred=automaticHeadset?headsetInput(await availableInputs(),names):null,rejectedHeadset=false;
   const checkCapture=()=>{if(expectedEpoch!==undefined&&(expectedEpoch!==roomEpoch||!iSpeak()))throw Object.assign(new Error('Audio session changed'),{code:'STALE_CAPTURE'})};
-  const acquire=async()=>{checkCapture();try{return await navigator.mediaDevices.getUserMedia({audio:{...micCons(),...(preferred?{deviceId:{exact:preferred.deviceId}}:{})}})}
-   catch(e){if(e.name!=='OverconstrainedError')throw e;checkCapture();if(preferred)rejectedHeadset=true;preferred=null;S.micId=null;try{localStorage.removeItem('pw_mic')}catch(x){}return navigator.mediaDevices.getUserMedia({audio:micCons()})}};
+  const acquire=async(backup)=>{checkCapture();try{return await navigator.mediaDevices.getUserMedia({audio:{...micCons(),...(preferred?{deviceId:{exact:preferred.deviceId}}:{})}})}
+   catch(e){if(e.name!=='OverconstrainedError'&&!(preferred&&['NotReadableError','AbortError','NotFoundError'].includes(e.name)))throw e;checkCapture();if(preferred)rejectedHeadset=true;preferred=null;S.micId=null;try{localStorage.removeItem('pw_mic')}catch(x){}return backup||navigator.mediaDevices.getUserMedia({audio:micCons()})}};
   let stream;
   try{stream=await acquire()}
   catch(e){
    if(!route.managed||!['NotReadableError','AbortError'].includes(e.name))throw e;
    // Some WebViews finish releasing AudioRecord just after the old track stops.
-   await new Promise(resolve=>setTimeout(resolve,250));route=await optionalRoomCall('prepareAudioRoute');
+   await new Promise(resolve=>setTimeout(resolve,250));route=await captureRoute();
    if(expectedEpoch!==undefined&&(expectedEpoch!==roomEpoch||!iSpeak()))throw Object.assign(new Error('Audio session changed'),{code:'STALE_CAPTURE'});
    stream=await acquire();
   }
@@ -789,11 +793,9 @@ function captureMic(expectedEpoch){
   if(automaticHeadset&&!preferred&&!rejectedHeadset){
    preferred=headsetInput(await availableInputs(),names);
    if(preferred&&stream.getAudioTracks()[0]?.getSettings?.().deviceId!==preferred.deviceId){
-    stream.getTracks().forEach(track=>track.stop());
-    if(expectedEpoch!==undefined&&(expectedEpoch!==roomEpoch||!iSpeak()))throw Object.assign(new Error('Audio session changed'),{code:'STALE_CAPTURE'});
-    try{stream=await acquire()}catch(e){if(!['NotReadableError','AbortError'].includes(e.name))throw e;await new Promise(resolve=>setTimeout(resolve,250));
-     if(expectedEpoch!==undefined&&(expectedEpoch!==roomEpoch||!iSpeak()))throw Object.assign(new Error('Audio session changed'),{code:'STALE_CAPTURE'});
-     stream=await acquire();}
+    const bootstrap=stream;
+    try{stream=await acquire(bootstrap)}catch(e){bootstrap.getTracks().forEach(track=>track.stop());throw e}
+    if(stream!==bootstrap)bootstrap.getTracks().forEach(track=>track.stop());
    }
   }
   stream.whassabiRoute=route.managed?route.generation:0;

@@ -48,16 +48,8 @@ final class RoomAudioRoute {
             if (BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED.equals(intent.getAction())) {
                 legacyHeadset = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1) == BluetoothProfile.STATE_CONNECTED;
                 blockedBluetooth = ""; if (communication != null) communication.unavailable = false; scheduleRefresh();
-            } else if (AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED.equals(intent.getAction())) {
+            } else if (AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED.equals(intent.getAction()) && communication == null) {
                 int state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1);
-                if (communication != null) {
-                    boolean wasConnected = scoConnected; scoConnected = state == AudioManager.SCO_AUDIO_STATE_CONNECTED;
-                    if (communication.needsSco()) {
-                        if (scoConnected) { audio.setBluetoothScoOn(true); communication.check(); }
-                        else if (wasConnected && state == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) communication.reconnectSco();
-                    }
-                    return;
-                }
                 if (state == AudioManager.SCO_AUDIO_STATE_CONNECTED && scoRequested && "bluetooth".equals(route)) {
                     scoConnected = true; audio.setBluetoothScoOn(true); finish(false);
                 } else if (state == AudioManager.SCO_AUDIO_STATE_DISCONNECTED && scoConnected) {
@@ -114,6 +106,12 @@ final class RoomAudioRoute {
         if (!running) callback.result(false, "system", 0);
         else if (settled) callback.result(true, route, generation);
         else waiting.add(callback);
+    }
+    void captureRoute(Ready callback) {
+        if (running) refreshNow();
+        // Android can defer communication routing until an AudioRecord/AudioTrack is active.
+        // Bootstrap capture now; the confirmed-route event will replace it if necessary.
+        callback.result(running, running && settled ? route : "system", running && settled ? generation : 0);
     }
     private void begin(String nextRoute, String nextKey) {
         route = nextRoute; key = nextKey; settled = false; generation = SERIAL.incrementAndGet();
@@ -212,14 +210,6 @@ final class RoomAudioRoute {
             try { audio.removeOnCommunicationDeviceChangedListener(changed); } catch (RuntimeException ignored) {}
             try { audio.clearCommunicationDevice(); } catch (RuntimeException ignored) {}
         }
-        boolean needsSco() { return Build.VERSION.SDK_INT <= 32 && requested != null && requested.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_SCO; }
-        void startSco() { if (needsSco() && !scoRequested) { scoRequested = true; audio.startBluetoothSco(); } }
-        void stopSco() { if (scoRequested) { scoRequested = false; scoConnected = false; audio.stopBluetoothSco(); audio.setBluetoothScoOn(false); } }
-        void reconnectSco() {
-            if (!running || !needsSco()) return;
-            stopSco(); begin("bluetooth", deviceKey(requested)); startSco();
-            deadline = SystemClock.uptimeMillis() + CONNECT_TIMEOUT; handler.removeCallbacks(check); check();
-        }
         void select() {
             List<AudioDeviceInfo> available = audio.getAvailableCommunicationDevices();
             if (unavailable && inventory(available).equals(failedInventory)) return;
@@ -238,14 +228,13 @@ final class RoomAudioRoute {
             requested = choice; failedRoute = false; fallbackPending = false;
             if (sameRoute) settled = false; else begin(kind(choice.getType()), deviceKey(choice));
             handler.removeCallbacks(check);
-            if (needsSco()) startSco(); else stopSco();
             if (!audio.setCommunicationDevice(choice)) { audio.clearCommunicationDevice(); if (!audio.setCommunicationDevice(choice)) { fallback(true); return; } }
             deadline = SystemClock.uptimeMillis() + CONNECT_TIMEOUT; check();
         }
         void check() {
             handler.removeCallbacks(check);
             if (!running || settled) return;
-            if (same(audio.getCommunicationDevice(), requested) && (!needsSco() || scoConnected)) { finish(failedRoute); return; }
+            if (same(audio.getCommunicationDevice(), requested)) { finish(failedRoute); return; }
             if (SystemClock.uptimeMillis() >= deadline) {
                 if (!fallbackPending) fallback(true);
                 else { audio.clearCommunicationDevice(); requested = null; unavailable = true; failedInventory = inventory(audio.getAvailableCommunicationDevices()); begin("system", "system"); finish(true); }
@@ -255,7 +244,6 @@ final class RoomAudioRoute {
         }
         void fallback(boolean failed) {
             handler.removeCallbacks(check);
-            stopSco();
             if (requested != null && isBluetooth(requested.getType())) blockedBluetooth = deviceKey(requested);
             audio.clearCommunicationDevice(); requested = null;
             for (AudioDeviceInfo device : audio.getAvailableCommunicationDevices()) if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) { requested = device; break; }
