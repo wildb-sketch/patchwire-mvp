@@ -35,6 +35,7 @@ npm run apk
 The file is `android/app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Notes
+- The original Whassabi logo is kept in `assets/whassabi-logo.png`. Launcher, round and adaptive icon resources are committed in `android-src/app/src/main/res` and copied into every prepared Android build.
 - This is a debug build for testing, not a Play Store release.
 - Microphone permissions are added by `scripts/patch-manifest.js`. Android asks for microphone access the first time you go on stage or record a voice message.
 - To point the app at another server open Profile > **Change server**.

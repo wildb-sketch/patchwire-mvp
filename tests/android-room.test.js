@@ -22,7 +22,7 @@ function harness(file, { android = true, capture = async () => stream(), native 
   S: { me: { id: 'me' }, room: { id: 'room1', title: 'Test', host: 'me', members: [{ uid: 'me', role: 'speaker' }] }, muted: false, ov: null },
   audio: {syncTracks: async () => {},recoverAll() {}}, networkTimer: 0,
   clearTimeout() {},
-  R: { mic: null, peers: {}, an: {} }, micCons: () => ({}),
+  R: { mic: null, peers: {}, an: {} },
   iSpeak: () => context.S.room?.members.some(m => m.uid === 'me' && m.role === 'speaker'),
   wsSend: value => { messages.push(value); return true; }, toast: value => toasts.push(value),
   watch() {}, setTrack: async () => {}, render() {}, paintOv() {}, mini() {},
@@ -30,6 +30,7 @@ function harness(file, { android = true, capture = async () => stream(), native 
  });
  const start = html.indexOf("// Capacitor's injected");
  const end = html.indexOf('const navigation=', start);
+ vm.runInContext(html.match(/^const micCons=.*$/m)[0], context);
  vm.runInContext(html.slice(start, end), context);
  vm.runInContext(html.match(/^function setMute\(v\).*$/m)[0], context);
  vm.runInContext(html.match(/^let pendingRoomExit=null;\nfunction doLeave.*$/m)[0], context);
@@ -219,6 +220,31 @@ for (const file of ['index.html', 'neon.html']) {
   h.context.setTimeout = callback => queueMicrotask(callback); h.context.S.muted = true;
   await h.context.syncMic(); assert.equal(captures, 2); assert(h.context.R.mic); assert.equal(h.context.S.muted, true); assert.equal(h.context.R.mic.enabled, false);
  });
+ test(`${file}: Android headset input is selected explicitly after device labels become available, with gain boost off`, async () => {
+  let captures=0;const streams=[],constraints=[];
+  const h=harness(file,{native:async method=>method==='prepareAudioRoute'?{managed:true,generation:1,route:'bluetooth'}:method==='getAudioStatus'?{headsetNames:['Galaxy Buds2'],outputName:'Galaxy Buds2'}:{},capture:async options=>{
+   constraints.push(options.audio);captures++;const s=stream();s.track.getSettings=()=>({deviceId:options.audio.deviceId?.exact||'phone-input'});streams.push(s);return s;
+  }});
+  h.context.navigator.mediaDevices.enumerateDevices=async()=>captures?[{kind:'audioinput',deviceId:'phone-input',label:'Built-in microphone'},{kind:'audioinput',deviceId:'bud-input',label:'Galaxy Buds2 Bluetooth Headset'}]:[];
+  await h.context.syncMic();assert.equal(captures,2);assert.equal(streams[0].track.readyState,'ended');assert.equal(h.context.R.mic,streams[1].track);
+  assert.equal(constraints[1].deviceId.exact,'bud-input');assert(constraints.every(c=>c.autoGainControl===false&&c.echoCancellation===true&&c.noiseSuppression===true));
+ });
+ test(`${file}: leaving during headset diagnostics cannot open a new microphone`, async () => {
+  const pending=deferred();let inspecting=false,captures=0;
+  const h=harness(file,{native:async method=>{
+   if(method==='prepareAudioRoute')return{managed:true,generation:1,route:'bluetooth'};
+   if(method==='getAudioStatus'){inspecting=true;return pending.promise}return{};
+  },capture:async()=>{captures++;return stream()}});
+  const sync=h.context.syncMic();while(!inspecting)await tick();h.context.cleanup();pending.resolve({});await sync;
+  assert.equal(captures,0);assert.equal(h.context.R.mic,null);
+ });
+ test(`${file}: unusable advertised headset inputs fall back once without leaking capture tracks`, async () => {
+  let captures=0;const h=harness(file,{native:async method=>method==='prepareAudioRoute'?{managed:true,generation:1,route:'bluetooth'}:{},capture:async options=>{
+   captures++;if(options.audio.deviceId?.exact==='unsupported-bt')throw Object.assign(Error('unsupported'),{name:'OverconstrainedError'});return stream();
+  }});
+  h.context.navigator.mediaDevices.enumerateDevices=async()=>[{kind:'audioinput',deviceId:'unsupported-bt',label:'Bluetooth headset'}];
+  await h.context.syncMic();assert.equal(captures,2);assert(h.context.R.mic);assert.equal(h.context.S.muted,false);
+ });
  // Parse every inline script too, including bootstrap and the two independent designs.
  test(`${file}: every inline script parses`, () => {
   const html = fs.readFileSync(path.join(root, 'public', file), 'utf8');
@@ -243,6 +269,9 @@ test('manifest patch is repeatable, upgrades existing service types, and copies 
   assert(twice.includes('android:foregroundServiceType="microphone|mediaPlayback"'));
   assert(fs.existsSync(path.join(tmp, 'android/app/src/main/java/com/patchwire/app/RoomPlugin.java')));
   assert(fs.existsSync(path.join(tmp, 'android/app/src/main/java/com/patchwire/app/RoomAudioRoute.java')));
+  assert(fs.existsSync(path.join(tmp, 'android/app/src/main/java/com/patchwire/app/RoomAudioStatus.java')));
+  for(const density of ['mdpi','hdpi','xhdpi','xxhdpi','xxxhdpi'])assert(fs.existsSync(path.join(tmp,'android/app/src/main/res','mipmap-'+density,'ic_launcher.png')));
+  assert(fs.readFileSync(path.join(tmp,'android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml'),'utf8').includes('whassabi_brand_yellow'));
   assert.equal(once.replace(/\s/g, ''), twice.replace(/\s/g, ''));
  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });

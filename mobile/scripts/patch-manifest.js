@@ -105,6 +105,18 @@ if (fs.existsSync(resSrc)) {
 }
 console.log('Done');
 
+// Keep Android's launch screen on the supplied app identity after every regeneration.
+const stylesPath = path.join(resDst, 'values', 'styles.xml');
+if (fs.existsSync(stylesPath)) {
+  let styles = fs.readFileSync(stylesPath, 'utf8');
+  styles = styles.replace(/<style name="AppTheme.NoActionBarLaunch"[^>]*>[\s\S]*?<\/style>/, `<style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="windowSplashScreenBackground">@color/whassabi_brand_yellow</item>
+        <item name="postSplashScreenTheme">@style/AppTheme.NoActionBar</item>
+    </style>`);
+  fs.writeFileSync(stylesPath, styles);
+}
+
 // Firebase resources and dependency belong to the generated project, never to manual local edits.
 const appDir = path.join(__dirname, '..', 'android', 'app');
 const services = path.join(__dirname, '..', '..', 'google-services.json');

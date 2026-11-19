@@ -120,6 +120,9 @@ public class RoomPlugin extends Plugin {
             result.put("bluetoothEnabled", RoomAudioRoute.bluetoothAllowed(getContext())); call.resolve(result);
         }));
     }
+    @PluginMethod public void getAudioStatus(PluginCall call) {
+        getActivity().runOnUiThread(() -> call.resolve(RoomAudioStatus.read(getContext())));
+    }
 
     @PluginMethod public void prepareNotifications(PluginCall call) {
         getActivity().runOnUiThread(() -> {
