@@ -70,10 +70,14 @@ test('both complete app designs retain microphone, mute, chat and room across ne
   const deadline=Date.now()+10000;while(await packets()<=count+3&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
   assert(await packets()>count+3,'Fresh RTP must arrive after each microphone route replacement');
  }
- await guest.evaluate(()=>{const original=Capacitor.nativePromise;Capacitor.nativePromise=async(plugin,method,...args)=>method==='getAudioStatus'?{input:'phone',inputVerified:true,output:'bluetooth'}:original(plugin,method,...args)});
+ await guest.evaluate(()=>{window.reportedOutput='bluetooth';const original=Capacitor.nativePromise;Capacitor.nativePromise=async(plugin,method,...args)=>method==='getAudioStatus'?{input:'phone',inputVerified:true,output:window.reportedOutput}:original(plugin,method,...args)});
  await guest.evaluate(()=>micSheet());
  assert.match(await guest.locator('#audio-status').textContent(),/Active microphone: Phone microphone/);
  assert.match(await guest.locator('#audio-status').textContent(),/Output: Bluetooth headset/);
  await guest.evaluate(()=>closeModal());
+ for(const [output,label] of [['earpiece','Phone call earpiece'],['speaker','Phone loudspeaker']]){
+  await guest.evaluate(output=>{window.reportedOutput=output;return micSheet()},output);
+  assert((await guest.locator('#audio-status').textContent()).includes('Output: '+label));await guest.evaluate(()=>closeModal());
+ }
  assert.deepEqual(errors,[]);
 });

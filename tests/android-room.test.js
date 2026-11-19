@@ -154,6 +154,23 @@ for (const file of ['index.html', 'neon.html']) {
   assert.equal(paintedRole,'listener');assert.equal(previous.readyState,'ended');assert.equal(h.context.R.mic,null);
   pending.resolve({});await sync;assert.equal(h.context.R.mic,null);
  });
+ test(`${file}: route failures name the failed phone output rather than blaming a headset`, async () => {
+  const h=harness(file);await h.context.roomCall('prepareBluetooth');
+  h.action({action:'audioRouteChanged',ready:true,generation:1,route:'system',failed:true,failedRoute:'speaker'});
+  assert.equal(h.toasts.length,1);assert.match(h.toasts[0],/Phone loudspeaker/);assert(!/headset|Bluetooth/i.test(h.toasts[0]));
+  h.action({action:'audioRouteChanged',ready:true,generation:2,route:'system',failed:true});
+  assert.match(h.toasts[1],/Audio output/);assert(!/headset|Bluetooth/i.test(h.toasts[1]));
+ });
+ test(`${file}: a genuine Bluetooth fallback explains the confirmed loudspeaker route`, async () => {
+  const h=harness(file);await h.context.roomCall('prepareBluetooth');
+  h.action({action:'audioRouteChanged',ready:true,generation:1,route:'speaker',failed:true,failedRoute:'bluetooth'});
+  assert.match(h.toasts[0],/Bluetooth.*Switched to the phone loudspeaker/);assert.equal(h.context.S.muted,false);
+ });
+ test(`${file}: microphone startup immediately refreshes Android output after AudioRecord can reset it`, async () => {
+  let capturing=false,refreshed=false;const track=stream();
+  const h=harness(file,{native:async method=>{if(method==='prepareAudioRoute'){if(capturing)refreshed=true;return{managed:true,generation:1,route:'speaker'}}return{}},capture:async()=>{capturing=true;return track}});
+  await h.context.syncMic();await tick();assert.equal(refreshed,true);assert.equal(h.context.R.mic,track.track);assert.equal(h.context.S.muted,false);
+ });
  test(`${file}: connected earbuds wait for native route confirmation before microphone capture`, async () => {
   const ready = deferred(); let captures = 0, preparing = false;
   const h = harness(file, { native: async method => { if (method === 'prepareAudioRoute') { preparing = true; return ready.promise; } return {}; }, capture: async () => { captures++; return stream(); } });

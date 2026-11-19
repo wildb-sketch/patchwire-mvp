@@ -62,7 +62,7 @@ final class RoomAudioStatus {
     @android.annotation.TargetApi(31) private static final class Api31 {
         static void output(AudioManager audio, JSObject result) {
             AudioDeviceInfo device = audio.getCommunicationDevice(); if (device == null) return;
-            int type = device.getType(); result.put("output", RoomAudioRoute.isBluetooth(type) ? "bluetooth" : RoomAudioRoute.isWired(type) ? "wired" : "speaker");
+            int type = device.getType(); result.put("output", RoomAudioRoute.isBluetooth(type) ? "bluetooth" : RoomAudioRoute.isWired(type) ? "wired" : type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ? "speaker" : type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE ? "earpiece" : "system");
             if (RoomAudioRoute.isBluetooth(type)) result.put("outputName", String.valueOf(device.getProductName()));
         }
     }
