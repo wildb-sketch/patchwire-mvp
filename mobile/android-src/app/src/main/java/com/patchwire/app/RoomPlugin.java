@@ -80,10 +80,11 @@ public class RoomPlugin extends Plugin {
         plugin.notifyListeners("roomAction", data);
         return true;
     }
-    static void audioRouteChanged(boolean ready, String route, long generation, boolean failed) {
+    static void audioRouteChanged(boolean ready, String route, long generation, boolean failed, String failedRoute) {
         RoomPlugin plugin = current.get(); if (plugin == null) return;
         JSObject data = new JSObject(); data.put("action", "audioRouteChanged"); data.put("ready", ready);
         data.put("route", route); data.put("generation", generation); data.put("failed", failed);
+        data.put("failedRoute", failedRoute);
         plugin.notifyListeners("roomAction", data);
     }
 

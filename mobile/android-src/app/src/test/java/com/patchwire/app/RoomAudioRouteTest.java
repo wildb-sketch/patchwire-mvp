@@ -38,13 +38,16 @@ public class RoomAudioRouteTest {
     private ShadowAudioManager shadow;
     private RoomAudioRoute routes;
     private final List<String> events = new ArrayList<>();
+    private final List<String> failures = new ArrayList<>();
     private AudioDeviceInfo speaker, bluetooth, wired;
     @Before public void setup() {
         context = RuntimeEnvironment.getApplication(); Shadows.shadowOf(context).grantPermissions(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH);
         audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE); shadow = Shadows.shadowOf(audio);
         speaker = device(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER); bluetooth = device(AudioDeviceInfo.TYPE_BLUETOOTH_SCO); wired = device(AudioDeviceInfo.TYPE_WIRED_HEADSET);
         audio.setMode(AudioManager.MODE_NORMAL); audio.setSpeakerphoneOn(false); audio.setBluetoothScoOn(false);
-        routes = new RoomAudioRoute(context, audio, (ready, route, generation, failed) -> events.add(ready + ":" + route + ":" + generation + ":" + failed));
+        routes = new RoomAudioRoute(context, audio, (ready, route, generation, failed, failedRoute) -> {
+            events.add(ready + ":" + route + ":" + generation + ":" + failed); if (failed) failures.add(failedRoute);
+        });
     }
     @After public void teardown() { routes.stop(); }
     private AudioDeviceInfo device(int type) { return AudioDeviceInfoBuilder.newBuilder().setType(type).build(); }
@@ -169,5 +172,49 @@ public class RoomAudioRouteTest {
         private AudioDeviceInfo requested;
         @Implementation protected boolean setCommunicationDevice(AudioDeviceInfo device) { requested = device; return delay || super.setCommunicationDevice(device); }
         void confirm() { delay = false; super.setCommunicationDevice(requested); }
+    }
+    @Test @Config(sdk = 31, shadows = StaleSpeakerAudio.class) public void initialSpeakerRequestOverriddenByWebViewIsClearedAndReappliedWithoutWaitingForTimeout() {
+        available(speaker, device(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)); routes.start(); assertNull(ready());
+        assertEquals(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE, audio.getCommunicationDevice().getType());
+        idle(249); assertNull(ready()); idle(1);
+        assertEquals("true:speaker", ready()); assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, audio.getCommunicationDevice().getType());
+        StaleSpeakerAudio state = Shadow.extract(audio); assertEquals(2, state.speakerRequests); assertEquals(1, state.clears);
+        assertTrue(failures.isEmpty()); assertEquals(1, events.stream().filter(e -> e.startsWith("false:")).count());
+        routes.refreshNow(); idle(1000); assertEquals(2, state.speakerRequests);
+    }
+    @Test @Config(sdk = 31, shadows = StaleSpeakerAudio.class) public void leavingDuringInitialSpeakerRecoveryCancelsRetries() {
+        available(speaker, device(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)); routes.start(); assertNull(ready());
+        StaleSpeakerAudio state = Shadow.extract(audio); routes.stop(); idle(35000);
+        assertEquals(1, state.speakerRequests); assertEquals(AudioManager.MODE_NORMAL, audio.getMode()); assertNull(audio.getCommunicationDevice());
+    }
+    @Test @Config(sdk = 31, shadows = DelayedAudio.class) public void unusablePhoneRouteHasBoundedRetriesAndNeverReportsAHeadsetFailure() {
+        available(speaker); routes.start(); assertNull(ready());
+        idle(4500); assertEquals("true:system", ready()); assertEquals(Arrays.asList("speaker"), failures);
+        int count = events.size(); routes.refreshNow(); idle(35000); assertEquals(count, events.size());
+    }
+    @Test @Config(sdk = 31, shadows = UnavailableBluetoothAudio.class) public void unavailableBluetoothFallsBackPromptlyAndReportsTheActualFailedRoute() {
+        available(speaker, bluetooth); routes.start(); assertNull(ready()); idle(5500);
+        assertEquals("true:speaker", ready()); assertEquals(Arrays.asList("bluetooth"), failures);
+        int count = events.size(); routes.refreshNow(); idle(35000); assertEquals(count, events.size());
+    }
+    @Test @Config(sdk = 31, shadows = StaleSpeakerAudio.class) public void pendingSpeakerRetriesDoNotOverrideAnActiveTelephoneCall() {
+        available(speaker, device(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)); routes.start();
+        StaleSpeakerAudio state = Shadow.extract(audio); audio.setMode(AudioManager.MODE_IN_CALL); idle(1000);
+        assertEquals(1, state.speakerRequests); assertEquals(AudioManager.MODE_IN_CALL, audio.getMode());
+        audio.setMode(AudioManager.MODE_NORMAL); idle(1000); assertEquals("true:speaker", ready());
+    }
+    @Implements(AudioManager.class) public static class StaleSpeakerAudio extends ShadowAudioManager {
+        int speakerRequests, clears; boolean stale;
+        @Implementation protected boolean setCommunicationDevice(AudioDeviceInfo device) {
+            if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                if (++speakerRequests == 1) { stale = true; super.setCommunicationDevice(AudioDeviceInfoBuilder.newBuilder().setType(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE).build()); }
+                if (stale) return true; // Accepted preference, but startup still uses the call earpiece.
+            }
+            return super.setCommunicationDevice(device);
+        }
+        @Implementation protected void clearCommunicationDevice() { clears++; stale = false; super.clearCommunicationDevice(); }
+    }
+    @Implements(AudioManager.class) public static class UnavailableBluetoothAudio extends ShadowAudioManager {
+        @Implementation protected boolean setCommunicationDevice(AudioDeviceInfo device) { return RoomAudioRoute.isBluetooth(device.getType()) || super.setCommunicationDevice(device); }
     }
 }

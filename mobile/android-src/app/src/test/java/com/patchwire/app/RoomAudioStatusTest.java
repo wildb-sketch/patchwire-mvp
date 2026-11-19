@@ -71,6 +71,14 @@ public class RoomAudioStatusTest {
         shadow.setActiveRecordingConfigurations(Arrays.asList(recording(14, phone), recording(15, bluetooth)), false);
         JSObject status = RoomAudioStatus.read(context); assertEquals("multiple", status.getString("input")); assertFalse(status.getBool("inputVerified"));
     }
+    @Test public void callEarpieceAndLoudspeakerAreReportedAsDifferentOutputs() {
+        AudioManager audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        AudioDeviceInfo earpiece = AudioDeviceInfoBuilder.newBuilder().setType(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE).build();
+        AudioDeviceInfo speaker = AudioDeviceInfoBuilder.newBuilder().setType(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER).build();
+        shadow.setAvailableCommunicationDevices(Arrays.asList(earpiece, speaker));
+        audio.setCommunicationDevice(earpiece); assertEquals("earpiece", RoomAudioStatus.read(context).getString("output"));
+        audio.setCommunicationDevice(speaker); assertEquals("speaker", RoomAudioStatus.read(context).getString("output"));
+    }
     @Implements(AudioRecordingConfiguration.class) public static class RecordingShadow {
         @RealObject AudioRecordingConfiguration real;
         @Implementation protected AudioDeviceInfo getAudioDevice() { return inputs.get(real.getClientAudioSessionId()); }

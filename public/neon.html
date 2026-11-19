@@ -530,7 +530,7 @@ async function startMeter(){
  catch(e){const lb=$('#mlab');if(lb)lb.textContent=micError(e)}finally{meterPending=false}
 }
 function stopMeter(){meterEpoch++;if(meter){clearInterval(meter.id);meter.st.getTracks().forEach(t=>t.stop());meter=null}}
-function audioStatusText(status){const labels={bluetooth:'Bluetooth headset microphone',phone:'Phone microphone',wired:'Wired / USB microphone',other:'Other microphone',inactive:'Microphone not recording',permission:'Microphone permission is off',multiple:'More than one microphone is active',unknown:'Not yet reported by Android'};return `<div class="card s" id="audio-status"><b>Active microphone:</b> ${esc(labels[status.input]||labels.unknown)}<br><span class="mute">Output: ${esc(({bluetooth:'Bluetooth headset',wired:'Wired / USB headset',speaker:'Phone',system:'System default'})[status.output]||'System default')}${status.silenced?' · Android has silenced capture':''}</span></div>`}
+function audioStatusText(status){const labels={bluetooth:'Bluetooth headset microphone',phone:'Phone microphone',wired:'Wired / USB microphone',other:'Other microphone',inactive:'Microphone not recording',permission:'Microphone permission is off',multiple:'More than one microphone is active',unknown:'Not yet reported by Android'};return `<div class="card s" id="audio-status"><b>Active microphone:</b> ${esc(labels[status.input]||labels.unknown)}<br><span class="mute">Output: ${esc(({bluetooth:'Bluetooth headset',wired:'Wired / USB headset',speaker:'Phone loudspeaker',earpiece:'Phone call earpiece',system:'System default'})[status.output]||'System default')}${status.silenced?' · Android has silenced capture':''}</span></div>`}
 async function micSheet(){
  let deviceStatus={};if(androidRoom())try{deviceStatus=await optionalRoomCall('getAudioStatus')}catch(e){}
  try{S.mics=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind=='audioinput')}catch(e){}
@@ -782,7 +782,7 @@ function audioRouteChanged(data){
  routeGeneration=data.generation;
  if(!data.ready)return;
  if(data.generation>confirmedRouteGeneration){confirmedRouteGeneration=data.generation;endedRetries=0;endedRetryAt=Date.now()}
- if(data.failed)toast('Headset audio could not connect. Reconnect the headset to retry.',null,{key:'audio-route'});
+ if(data.failed)toast(data.failedRoute==='bluetooth'?'Bluetooth audio could not connect. '+(data.route==='speaker'?'Switched to the phone loudspeaker.':'Reconnect the headset to retry.'):data.failedRoute==='wired'?'Wired headset audio could not connect. Check the connection.':data.failedRoute==='speaker'?'Phone loudspeaker could not start. Rejoin the room to retry.':'Audio output could not connect. Rejoin the room to retry.',null,{key:'audio-route'});
  if(iSpeak()&&!micFailed&&data.generation>(R.micRoute||0)&&(R.mic||micSync)){clearTimeout(endedRecoveryTimer);endedRecoveryTimer=0;micRouteRequested=true;syncMic()}
 }
 function roomCall(method,options={}){

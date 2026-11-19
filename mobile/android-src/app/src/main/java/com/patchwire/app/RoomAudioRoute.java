@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** Communication output and its matching input, owned only for the room's service lifetime. */
 final class RoomAudioRoute {
-    interface Listener { void changed(boolean ready, String route, long generation, boolean failed); }
+    interface Listener { void changed(boolean ready, String route, long generation, boolean failed, String failedRoute); }
     interface Ready { void result(boolean managed, String route, long generation); }
     private static final AtomicLong SERIAL = new AtomicLong();
     static final long CONNECT_TIMEOUT = 30000;
@@ -37,7 +37,7 @@ final class RoomAudioRoute {
     private boolean running, settled, modeOwned, receiverRegistered, scoRequested, scoConnected;
     private boolean previousSpeaker;
     private Boolean legacyHeadset;
-    private String route = "speaker", key = "", blockedBluetooth = "";
+    private String route = "speaker", key = "", blockedBluetooth = "", failedSource = "";
     private long generation;
     private final Runnable refresh = this::refreshNow;
     private final Runnable legacyTimeout = () -> { if (running && !settled && "bluetooth".equals(route)) { blockedBluetooth = "legacy"; legacyFallback(true); } };
@@ -115,12 +115,12 @@ final class RoomAudioRoute {
     }
     private void begin(String nextRoute, String nextKey) {
         route = nextRoute; key = nextKey; settled = false; generation = SERIAL.incrementAndGet();
-        listener.changed(false, route, generation, false);
+        listener.changed(false, route, generation, false, "");
     }
     private void finish(boolean failed) {
         if (!running || settled) return;
         settled = true; handler.removeCallbacks(legacyTimeout);
-        listener.changed(true, route, generation, failed);
+        listener.changed(true, route, generation, failed, failed ? (failedSource.isEmpty() ? route : failedSource) : "");
         List<Ready> callbacks = new ArrayList<>(waiting); waiting.clear();
         for (Ready callback : callbacks) callback.result(true, route, generation);
     }
@@ -150,6 +150,7 @@ final class RoomAudioRoute {
         } else legacyFallback(false);
     }
     private void legacyFallback(boolean failed) {
+        failedSource = failed ? route : "";
         if (scoRequested) { audio.stopBluetoothSco(); audio.setBluetoothScoOn(false); scoRequested = false; scoConnected = false; }
         boolean wired = audio.isWiredHeadsetOn() || devices != null && devices.hasWired();
         String next = wired ? "wired" : "speaker";
@@ -190,16 +191,20 @@ final class RoomAudioRoute {
     @android.annotation.TargetApi(31)
     private final class Api31 {
         private AudioDeviceInfo requested;
-        private long deadline;
+        private long deadline, lastRequest;
+        private int requests;
+        private static final long PHONE_TIMEOUT = 2000, HEADSET_TIMEOUT = 5000, RETRY_INTERVAL = 250;
+        private static final int MAX_REQUESTS = 4;
         private boolean failedRoute, fallbackPending, unavailable;
         private String failedInventory = "";
-        private final Runnable check = this::check;
+        private final Runnable check = () -> { try { check(); } catch (RuntimeException error) { failSafely(); } };
         private final AudioManager.OnModeChangedListener modeChanged = mode -> {
             if (mode != AudioManager.MODE_IN_COMMUNICATION && mode != AudioManager.MODE_IN_CALL) scheduleRefresh();
         };
         private final AudioManager.OnCommunicationDeviceChangedListener changed = device -> {
             if (!running) return;
-            if (!settled) { if (same(device, requested)) check(); }
+            try {
+            if (!settled) check();
             else if (device != null && !same(device, requested)) {
                 unavailable = false;
                 if (isBluetooth(device.getType()) && deviceKey(device).equals(blockedBluetooth)) blockedBluetooth = "";
@@ -207,6 +212,7 @@ final class RoomAudioRoute {
                 // Reassert the same physical route without requesting another capture restart.
                 scheduleRefresh();
             } else if (device == null) scheduleRefresh();
+            } catch (RuntimeException error) { failSafely(); }
         };
         void start() {
             audio.addOnCommunicationDeviceChangedListener(handler::post, changed);
@@ -232,33 +238,51 @@ final class RoomAudioRoute {
                 if (score > best || score == best && same(device, audio.getCommunicationDevice())) { choice = device; best = score; }
             }
             if (choice == null) { if (!settled) { begin("system", "system"); finish(true); } return; }
-            if (same(choice, requested) && (!settled || same(choice, audio.getCommunicationDevice()))) return;
-            boolean sameRoute = same(choice, requested);
-            requested = choice; failedRoute = false; fallbackPending = false;
+            if (same(choice, requested) && !settled) { check(); return; }
+            if (same(choice, requested) && same(choice, audio.getCommunicationDevice()) && kind(choice.getType()).equals(route)) return;
+            boolean sameRoute = same(choice, requested) && kind(choice.getType()).equals(route);
+            requested = choice; failedRoute = false; fallbackPending = false; failedSource = ""; requests = 0;
             if (sameRoute) settled = false; else begin(kind(choice.getType()), deviceKey(choice));
             handler.removeCallbacks(check);
-            if (!audio.setCommunicationDevice(choice)) { audio.clearCommunicationDevice(); if (!audio.setCommunicationDevice(choice)) { fallback(true); return; } }
-            deadline = SystemClock.uptimeMillis() + CONNECT_TIMEOUT; check();
+            deadline = SystemClock.uptimeMillis() + (isBluetooth(choice.getType()) ? HEADSET_TIMEOUT : PHONE_TIMEOUT);
+            if (!request(false) && !request(true)) { fallback(true); return; }
+            check();
+        }
+        boolean request(boolean clear) {
+            lastRequest = SystemClock.uptimeMillis(); requests++;
+            if (clear) audio.clearCommunicationDevice();
+            return requested != null && audio.setCommunicationDevice(requested);
         }
         void check() {
             handler.removeCallbacks(check);
             if (!running || settled) return;
+            if (audio.getMode() == AudioManager.MODE_IN_CALL) { handler.postDelayed(check, 250); return; }
+            if (audio.getMode() != AudioManager.MODE_IN_COMMUNICATION) { audio.setMode(AudioManager.MODE_IN_COMMUNICATION); modeOwned = true; }
             if (same(audio.getCommunicationDevice(), requested)) { finish(failedRoute); return; }
             if (SystemClock.uptimeMillis() >= deadline) {
                 if (!fallbackPending) fallback(true);
                 else { audio.clearCommunicationDevice(); requested = null; unavailable = true; failedInventory = inventory(audio.getAvailableCommunicationDevices()); begin("system", "system"); finish(true); }
                 return;
             }
+            // WebView can overwrite the first speaker request during AudioRecord startup.
+            // Clear that stale preference and reapply it promptly without extending the deadline
+            // or creating a new capture generation. Do not restart Bluetooth handshakes here.
+            if (requested != null && !isBluetooth(requested.getType()) && requests < MAX_REQUESTS && SystemClock.uptimeMillis() - lastRequest >= RETRY_INTERVAL) {
+                request(true);
+                if (same(audio.getCommunicationDevice(), requested)) { finish(failedRoute); return; }
+            }
             handler.postDelayed(check, 250);
         }
         void fallback(boolean failed) {
             handler.removeCallbacks(check);
+            if (!fallbackPending) failedSource = requested == null ? "system" : kind(requested.getType());
             if (requested != null && isBluetooth(requested.getType())) blockedBluetooth = deviceKey(requested);
             audio.clearCommunicationDevice(); requested = null;
             for (AudioDeviceInfo device : audio.getAvailableCommunicationDevices()) if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) { requested = device; break; }
-            failedRoute = failed; fallbackPending = true;
+            // Recovering the requested phone speaker is success, not a headset failure.
+            failedRoute = failed && !"speaker".equals(failedSource); fallbackPending = true; requests = 0;
             begin(requested == null ? "system" : "speaker", requested == null ? "system" : deviceKey(requested));
-            if (requested != null && audio.setCommunicationDevice(requested)) { deadline = SystemClock.uptimeMillis() + 3000; check(); }
+            if (requested != null && request(false)) { deadline = SystemClock.uptimeMillis() + PHONE_TIMEOUT; check(); }
             else { unavailable = true; failedInventory = inventory(audio.getAvailableCommunicationDevices()); begin("system", "system"); finish(failed); }
         }
         String inventory(List<AudioDeviceInfo> available) {
