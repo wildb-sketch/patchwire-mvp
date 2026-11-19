@@ -35,7 +35,7 @@ import org.robolectric.util.ReflectionHelpers;
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk = 34, manifest = Config.NONE)
+@Config(sdk = 34, manifest = Config.NONE, shadows = RoomAudioRouteTest.Android12Audio.class)
 @LooperMode(LooperMode.Mode.PAUSED)
 public class RoomAudioRouteTest {
     private Application context;
@@ -159,7 +159,25 @@ public class RoomAudioRouteTest {
         assertEquals("true:bluetooth", capture[0]); assertTrue(generation[0] > 0);
         routes.stop(); routes.captureRoute((managed, route, serial) -> assertFalse(managed));
     }
-    @Implements(AudioManager.class) public static class ModernOnlyAudio extends ShadowAudioManager {
+    /** Android 12's two public speaker APIs address the same route; model that platform alias. */
+    @Implements(AudioManager.class) public static class Android12Audio extends ShadowAudioManager {
+        int compatibilityCalls;
+        @Implementation protected void setSpeakerphoneOn(boolean on) {
+            super.setSpeakerphoneOn(on);
+            if (android.os.Build.VERSION.SDK_INT < 31 || android.os.Build.VERSION.SDK_INT > 32) return;
+            if (on) {
+                compatibilityCalls++;
+                for (AudioDeviceInfo device : getAvailableCommunicationDevices()) if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) { super.setCommunicationDevice(device); break; }
+            } else { AudioDeviceInfo current = getCommunicationDevice(); if (current != null && current.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) super.clearCommunicationDevice(); }
+        }
+        @Implementation protected boolean setCommunicationDevice(AudioDeviceInfo device) {
+            boolean result = super.setCommunicationDevice(device);
+            if (result && android.os.Build.VERSION.SDK_INT >= 31 && android.os.Build.VERSION.SDK_INT <= 32) super.setSpeakerphoneOn(device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER);
+            return result;
+        }
+        @Implementation protected void clearCommunicationDevice() { super.clearCommunicationDevice(); if (android.os.Build.VERSION.SDK_INT >= 31 && android.os.Build.VERSION.SDK_INT <= 32) super.setSpeakerphoneOn(false); }
+    }
+    @Implements(AudioManager.class) public static class ModernOnlyAudio extends Android12Audio {
         @Implementation protected void startBluetoothSco() { throw new AssertionError("Do not mix legacy SCO with setCommunicationDevice on Android 12+"); }
     }
     @Test @Config(sdk = 31) public void disconnectingTheHeadsetReturnsToLoudspeakerEvenWhileTheDeviceListIsStale() {
@@ -186,13 +204,13 @@ public class RoomAudioRouteTest {
         audio.setMode(AudioManager.MODE_NORMAL); idle(600);
         assertEquals(AudioManager.MODE_IN_COMMUNICATION, audio.getMode()); assertEquals("true:speaker", ready());
     }
-    @Implements(AudioManager.class) public static class DelayedAudio extends ShadowAudioManager {
+    @Implements(AudioManager.class) public static class DelayedAudio extends Android12Audio {
         boolean delay = true;
         private AudioDeviceInfo requested;
         @Implementation protected boolean setCommunicationDevice(AudioDeviceInfo device) { requested = device; return delay || super.setCommunicationDevice(device); }
         void confirm() { delay = false; super.setCommunicationDevice(requested); }
     }
-    @Test @Config(sdk = 31, shadows = StaleSpeakerAudio.class) public void initialSpeakerRequestOverriddenByWebViewIsClearedAndReappliedWithoutWaitingForTimeout() {
+    @Test @Config(sdk = 34, shadows = StaleSpeakerAudio.class) public void initialSpeakerRequestOverriddenByWebViewIsClearedAndReappliedWithoutWaitingForTimeout() {
         available(speaker, device(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)); routes.start(); assertNull(ready());
         assertEquals(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE, audio.getCommunicationDevice().getType());
         idle(249); assertNull(ready()); idle(1);
@@ -201,12 +219,12 @@ public class RoomAudioRouteTest {
         assertTrue(failures.isEmpty()); assertEquals(1, events.stream().filter(e -> e.startsWith("false:")).count());
         routes.refreshNow(); idle(1000); assertEquals(2, state.speakerRequests);
     }
-    @Test @Config(sdk = 31, shadows = StaleSpeakerAudio.class) public void leavingDuringInitialSpeakerRecoveryCancelsRetries() {
+    @Test @Config(sdk = 34, shadows = StaleSpeakerAudio.class) public void leavingDuringInitialSpeakerRecoveryCancelsRetries() {
         available(speaker, device(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)); routes.start(); assertNull(ready());
         StaleSpeakerAudio state = Shadow.extract(audio); routes.stop(); idle(35000);
         assertEquals(1, state.speakerRequests); assertEquals(AudioManager.MODE_NORMAL, audio.getMode()); assertNull(audio.getCommunicationDevice());
     }
-    @Test @Config(sdk = 31, shadows = DelayedAudio.class) public void unusablePhoneRouteHasBoundedRetriesAndNeverReportsAHeadsetFailure() {
+    @Test @Config(sdk = 34, shadows = DelayedAudio.class) public void unusablePhoneRouteHasBoundedRetriesAndNeverReportsAHeadsetFailure() {
         available(speaker); routes.start(); assertNull(ready());
         idle(4500); assertEquals("true:system", ready()); assertEquals(Arrays.asList("speaker"), failures);
         int count = events.size(); routes.refreshNow(); idle(35000); assertEquals(count, events.size());
@@ -216,13 +234,13 @@ public class RoomAudioRouteTest {
         assertEquals("true:speaker", ready()); assertEquals(Arrays.asList("bluetooth"), failures);
         int count = events.size(); routes.refreshNow(); idle(35000); assertEquals(count, events.size());
     }
-    @Test @Config(sdk = 31, shadows = StaleSpeakerAudio.class) public void pendingSpeakerRetriesDoNotOverrideAnActiveTelephoneCall() {
+    @Test @Config(sdk = 34, shadows = StaleSpeakerAudio.class) public void pendingSpeakerRetriesDoNotOverrideAnActiveTelephoneCall() {
         available(speaker, device(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)); routes.start();
         StaleSpeakerAudio state = Shadow.extract(audio); audio.setMode(AudioManager.MODE_IN_CALL); idle(1000);
         assertEquals(1, state.speakerRequests); assertEquals(AudioManager.MODE_IN_CALL, audio.getMode());
         audio.setMode(AudioManager.MODE_NORMAL); idle(1000); assertEquals("true:speaker", ready());
     }
-    @Implements(AudioManager.class) public static class StaleSpeakerAudio extends ShadowAudioManager {
+    @Implements(AudioManager.class) public static class StaleSpeakerAudio extends Android12Audio {
         int speakerRequests, clears; boolean stale;
         @Implementation protected boolean setCommunicationDevice(AudioDeviceInfo device) {
             if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
@@ -233,7 +251,7 @@ public class RoomAudioRouteTest {
         }
         @Implementation protected void clearCommunicationDevice() { clears++; stale = false; super.clearCommunicationDevice(); }
     }
-    @Implements(AudioManager.class) public static class UnavailableBluetoothAudio extends ShadowAudioManager {
+    @Implements(AudioManager.class) public static class UnavailableBluetoothAudio extends Android12Audio {
         java.util.concurrent.Executor executor; AudioManager.OnCommunicationDeviceChangedListener listener;
         @Implementation protected void addOnCommunicationDeviceChangedListener(java.util.concurrent.Executor executor, AudioManager.OnCommunicationDeviceChangedListener listener) {
             this.executor = executor; this.listener = listener;
@@ -277,7 +295,7 @@ public class RoomAudioRouteTest {
         headsets.removeDevice(headsetDevice); context.sendBroadcast(new Intent(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED).putExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED)); idle(600);
         assertEquals("true:speaker", ready()); assertTrue(failures.isEmpty());
     }
-    @Test @Config(sdk = 31, shadows = DelayedAudio.class) public void unconfirmedSpeakerNeverClearsThePreferenceOrChangesMicrophoneGeneration() {
+    @Test @Config(sdk = 34, shadows = DelayedAudio.class) public void unconfirmedSpeakerNeverClearsThePreferenceOrChangesMicrophoneGeneration() {
         available(speaker); routes.start(); String first = events.get(0).split(":")[2]; idle(4500);
         assertEquals("true:system", ready()); assertEquals(Long.parseLong(first), generation());
         DelayedAudio state = Shadow.extract(audio); state.confirm(); routes.refreshNow(); idle(300);
@@ -295,6 +313,17 @@ public class RoomAudioRouteTest {
         routes.stop(); idle(1000);
         assertFalse(Shadows.shadowOf(BluetoothAdapter.getDefaultAdapter()).hasActiveProfileProxy(BluetoothProfile.HEADSET));
         assertEquals(AudioManager.MODE_NORMAL, audio.getMode()); assertNull(audio.getCommunicationDevice());
+    }
+    @Test @Config(sdk = 31, shadows = StaleSpeakerAudio.class) public void android12SpeakerUsesCompatibilityControlEvenWhenModernSpeakerRequestsWouldBeIgnored() {
+        available(speaker, device(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)); routes.start();
+        assertEquals("true:speaker", ready()); assertTrue(audio.isSpeakerphoneOn()); assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, audio.getCommunicationDevice().getType());
+        StaleSpeakerAudio state = Shadow.extract(audio); assertEquals(0, state.speakerRequests); assertEquals(0, state.clears); assertTrue(state.compatibilityCalls > 0); assertTrue(failures.isEmpty());
+    }
+    @Test @Config(sdk = 31) public void android12UnplugUsesPhysicalSpeakerEvenWhileTheCommunicationListStillContainsOnlyBluetooth() {
+        available(bluetooth); shadow.setOutputDevices(Arrays.asList(speaker)); routes.start(); idle(300); assertEquals("true:bluetooth", ready());
+        headsets.removeDevice(headsetDevice); context.sendBroadcast(new Intent(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED).putExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED)); idle(600);
+        assertEquals("true:speaker", ready()); assertTrue(audio.isSpeakerphoneOn()); assertTrue(failures.isEmpty());
+        long serial = generation(); idle(6000); assertEquals(serial, generation()); assertTrue(failures.isEmpty());
     }
     @Implements(BluetoothAdapter.class) public static class DelayedProfileAdapter extends org.robolectric.shadows.ShadowBluetoothAdapter {
         BluetoothProfile.ServiceListener pending;

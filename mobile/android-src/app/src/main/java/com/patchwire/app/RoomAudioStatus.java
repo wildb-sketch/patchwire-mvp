@@ -18,6 +18,10 @@ final class RoomAudioStatus {
         JSObject result = new JSObject(); result.put("input", "unknown"); result.put("output", "system");
         result.put("inputVerified", false); result.put("headsetNames", new JSONArray());
         result.put("outputMode", RoomAudioRoute.outputMode(context));
+        result.put("audioBuild", RoomAudioDiagnostics.BUILD); result.put("routing", RoomService.audioDiagnostics());
+        JSObject platform = new JSObject(); platform.put("manufacturer", Build.MANUFACTURER); platform.put("model", Build.MODEL);
+        platform.put("android", Build.VERSION.RELEASE); platform.put("sdk", Build.VERSION.SDK_INT); result.put("platform", platform);
+        if (Build.VERSION.SDK_INT >= 26) Api26.webView(result);
         AudioManager audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         if (audio == null) return result;
         try {
@@ -62,9 +66,15 @@ final class RoomAudioStatus {
     }
     @android.annotation.TargetApi(31) private static final class Api31 {
         static void output(AudioManager audio, JSObject result) {
-            AudioDeviceInfo device = audio.getCommunicationDevice(); if (device == null) return;
-            int type = device.getType(); result.put("output", RoomAudioRoute.isBluetooth(type) ? "bluetooth" : RoomAudioRoute.isWired(type) ? "wired" : type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ? "speaker" : type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE ? "earpiece" : "system");
-            if (RoomAudioRoute.isBluetooth(type)) result.put("outputName", String.valueOf(device.getProductName()));
+            boolean speakerOn = audio.isSpeakerphoneOn(); result.put("speakerphoneOn", speakerOn); result.put("audioMode", audio.getMode());
+            if (Build.VERSION.SDK_INT <= 32 && speakerOn) result.put("output", "speaker");
+            AudioDeviceInfo device = audio.getCommunicationDevice(); if (device == null) { result.put("communicationType", 0); return; }
+            int type = device.getType(); result.put("communicationType", type);
+            result.put("output", Build.VERSION.SDK_INT <= 32 && speakerOn ? "speaker" : RoomAudioRoute.isBluetooth(type) ? "bluetooth" : RoomAudioRoute.isWired(type) ? "wired" : type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ? "speaker" : type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE ? "earpiece" : "system");
+            if ("bluetooth".equals(result.getString("output"))) result.put("outputName", String.valueOf(device.getProductName()));
         }
+    }
+    @android.annotation.TargetApi(26) private static final class Api26 {
+        static void webView(JSObject result) { try { android.content.pm.PackageInfo info = android.webkit.WebView.getCurrentWebViewPackage(); if (info != null) result.put("webViewVersion", info.versionName); } catch (RuntimeException ignored) {} }
     }
 }

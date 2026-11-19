@@ -32,6 +32,7 @@ final class RoomAudioRoute {
     private final Listener listener;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<Ready> waiting = new ArrayList<>();
+    private final RoomAudioDiagnostics diagnostics = new RoomAudioDiagnostics();
     private Api23 devices;
     private Api31 communication;
     private RoomBluetoothDevices bluetoothDevices;
@@ -75,12 +76,14 @@ final class RoomAudioRoute {
         if (communication != null) { communication.failedBluetooth.clear(); communication.unavailable = false; }
         refreshNow();
     }
+    com.getcapacitor.JSObject diagnostics() { return diagnostics.snapshot(route, settled, generation, outputMode); }
     static boolean bluetoothAllowed(Context context) {
         return Build.VERSION.SDK_INT < 31 || ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
     }
     void start() {
         if (running || audio == null) return;
         running = true; previousSpeaker = audio.isSpeakerphoneOn();
+        diagnostics.add("start", route, audio);
         try {
             if (audio.getMode() != AudioManager.MODE_IN_CALL) { audio.setMode(AudioManager.MODE_IN_COMMUNICATION); modeOwned = true; }
             IntentFilter filter = new IntentFilter(AudioManager.ACTION_HEADSET_PLUG);
@@ -136,10 +139,12 @@ final class RoomAudioRoute {
             generation = SERIAL.incrementAndGet(); if (!"system".equals(nextRoute)) captureKey = identity;
         }
         listener.changed(false, route, generation, false, "");
+        diagnostics.add("route_pending", route, audio);
     }
     private void finish(boolean failed) {
         if (!running || settled) return;
         settled = true; handler.removeCallbacks(legacyTimeout);
+        diagnostics.add(failed ? "route_failed" : "route_ready", route, audio);
         listener.changed(true, route, generation, failed, failed ? (failedSource.isEmpty() ? route : failedSource) : "");
         List<Ready> callbacks = new ArrayList<>(waiting); waiting.clear();
         for (Ready callback : callbacks) callback.result(true, route, generation);
@@ -182,6 +187,7 @@ final class RoomAudioRoute {
     void stop() {
         if (!running) return;
         running = false; handler.removeCallbacksAndMessages(null);
+        diagnostics.add("stop", route, audio);
         if (devices != null) devices.stop();
         if (bluetoothDevices != null) bluetoothDevices.stop();
         if (communication != null) communication.stop();
@@ -243,10 +249,19 @@ final class RoomAudioRoute {
             try { audio.removeOnCommunicationDeviceChangedListener(changed); } catch (RuntimeException ignored) {}
             try { audio.removeOnModeChangedListener(modeChanged); } catch (RuntimeException ignored) {}
             try { audio.clearCommunicationDevice(); } catch (RuntimeException ignored) {}
+            try { if (Build.VERSION.SDK_INT <= 32 && audio.getMode() != AudioManager.MODE_IN_CALL) audio.setSpeakerphoneOn(previousSpeaker); } catch (RuntimeException ignored) {}
+        }
+        boolean phoneCompat() { return Build.VERSION.SDK_INT <= 32 && requested != null && requested.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER; }
+        boolean confirmed() { return phoneCompat() && audio.isSpeakerphoneOn() || same(audio.getCommunicationDevice(), requested); }
+        AudioDeviceInfo phoneSpeaker() {
+            for (AudioDeviceInfo device : audio.getAvailableCommunicationDevices()) if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) return device;
+            // Android 12 can temporarily omit the speaker from the communication list on HFP removal.
+            if (Build.VERSION.SDK_INT <= 32) for (AudioDeviceInfo device : audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) return device;
+            return null;
         }
         void select() {
             List<AudioDeviceInfo> available = audio.getAvailableCommunicationDevices();
-            if (unavailable && inventory(available).equals(failedInventory) && !same(audio.getCommunicationDevice(), requested)) return;
+            if (unavailable && inventory(available).equals(failedInventory) && !confirmed()) return;
             unavailable = false;
             AudioDeviceInfo choice = null; int best = -1;
             for (AudioDeviceInfo device : available) {
@@ -260,9 +275,10 @@ final class RoomAudioRoute {
                 if (score < 0) continue;
                 if (score > best || score == best && same(device, audio.getCommunicationDevice())) { choice = device; best = score; }
             }
+            if (choice == null) choice = phoneSpeaker();
             if (choice == null) { if (!settled) { begin("system", "system"); finish(true); } return; }
             if (same(choice, requested) && !settled) { check(); return; }
-            if (same(choice, requested) && same(choice, audio.getCommunicationDevice()) && kind(choice.getType()).equals(route)) return;
+            if (same(choice, requested) && confirmed() && kind(choice.getType()).equals(route)) return;
             boolean sameRoute = same(choice, requested) && kind(choice.getType()).equals(route);
             requested = choice; failedRoute = false; fallbackPending = false; failedSource = ""; requests = 0;
             if (sameRoute) settled = false; else begin(kind(choice.getType()), deviceKey(choice));
@@ -273,7 +289,15 @@ final class RoomAudioRoute {
         }
         boolean request(boolean clear) {
             lastRequest = SystemClock.uptimeMillis(); requests++;
+            if (phoneCompat()) {
+                // Android 12/12L's speakerphone API does not require a live HFP communication port.
+                // Use it as the single phone-output control on these versions; do not clear it
+                // while switching out of a disconnected Bluetooth route.
+                audio.setSpeakerphoneOn(true); diagnostics.add("speakerphone_compat", route, audio); return true;
+            }
+            if (Build.VERSION.SDK_INT <= 32 && requests == 1 && audio.isSpeakerphoneOn()) audio.setSpeakerphoneOn(false);
             if (clear) audio.clearCommunicationDevice();
+            diagnostics.add(clear ? "communication_reapply" : "communication_request", route, audio);
             return requested != null && audio.setCommunicationDevice(requested);
         }
         void check() {
@@ -281,7 +305,7 @@ final class RoomAudioRoute {
             if (!running || settled) return;
             if (audio.getMode() == AudioManager.MODE_IN_CALL) { handler.postDelayed(check, 250); return; }
             if (audio.getMode() != AudioManager.MODE_IN_COMMUNICATION) { audio.setMode(AudioManager.MODE_IN_COMMUNICATION); modeOwned = true; }
-            if (same(audio.getCommunicationDevice(), requested)) { finish(failedRoute); return; }
+            if (confirmed()) { finish(failedRoute); return; }
             if (SystemClock.uptimeMillis() >= deadline) {
                 if (!fallbackPending) fallback(true);
                 else {
@@ -296,7 +320,7 @@ final class RoomAudioRoute {
             // or creating a new capture generation. Do not restart Bluetooth handshakes here.
             if (requested != null && !isBluetooth(requested.getType()) && requests < MAX_REQUESTS && SystemClock.uptimeMillis() - lastRequest >= RETRY_INTERVAL) {
                 request(true);
-                if (same(audio.getCommunicationDevice(), requested)) { finish(failedRoute); return; }
+                if (confirmed()) { finish(failedRoute); return; }
             }
             handler.postDelayed(check, 250);
         }
@@ -304,8 +328,7 @@ final class RoomAudioRoute {
             handler.removeCallbacks(check);
             if (!fallbackPending) failedSource = requested == null ? "system" : kind(requested.getType());
             if (requested != null && isBluetooth(requested.getType())) failedBluetooth.add(bluetoothKey(requested));
-            requested = null;
-            for (AudioDeviceInfo device : audio.getAvailableCommunicationDevices()) if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) { requested = device; break; }
+            requested = phoneSpeaker(); diagnostics.add("speaker_fallback", route, audio);
             // Recovering the requested phone speaker is success, not a headset failure.
             failedRoute = failed && !"speaker".equals(failedSource); fallbackPending = true; requests = 0;
             begin(requested == null ? "system" : "speaker", requested == null ? "system" : deviceKey(requested));

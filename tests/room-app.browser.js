@@ -15,7 +15,7 @@ test('both complete app designs retain microphone, mute, chat and room across ne
  const errors=[],pages=[];
  for(const [nick,route] of [['host','/neon'],['guest','/']]){
   const r=await fetch(base+'/api/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nick,email:nick+'@example.test',password:'test-voice-password'})});const account=await r.json();assert(account.token);
-  const context=await browser.newContext();await context.grantPermissions(['microphone'],{origin:base});
+  const context=await browser.newContext();await context.grantPermissions(['microphone','clipboard-read','clipboard-write'],{origin:base});
   await context.addInitScript(token=>localStorage.setItem('pw_tok',token),account.token);
   const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(base+route);
   await page.waitForFunction(()=>typeof ws!=='undefined'&&ws?.readyState===1&&S.me);pages.push(page);
@@ -78,6 +78,15 @@ test('both complete app designs retain microphone, mute, chat and room across ne
  for(const [output,label] of [['earpiece','Phone call earpiece'],['speaker','Phone loudspeaker']]){
   await guest.evaluate(output=>{window.reportedOutput=output;return micSheet()},output);
   assert((await guest.locator('#audio-status').textContent()).includes('Output: '+label));await guest.evaluate(()=>closeModal());
+ }
+ for(const page of pages){
+  await page.evaluate(()=>micSheet());
+  await page.locator('#copy-audio-diagnostics').click();
+  const text=await page.evaluate(()=>navigator.clipboard.readText()),report=JSON.parse(text);
+  assert.equal(report.format,'whassabi-audio-1');assert.equal(report.capture.settings.autoGainControl,true);
+  assert.equal(report.capture.constraints.autoGainControl,true);
+  assert(!(await page.evaluate(text=>text.includes(S.tok)||text.includes(S.me.id),text)));
+  assert(!text.includes('deviceId'));assert(!text.includes('candidate'));await page.evaluate(()=>closeModal());
  }
  assert.deepEqual(errors,[]);
 });

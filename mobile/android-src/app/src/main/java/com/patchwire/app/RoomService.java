@@ -43,6 +43,9 @@ public class RoomService extends Service {
         RoomAudioRoute.saveOutputMode(context, mode);
         RoomService service = current.get(); if (service != null && service.routes != null) service.routes.setOutputMode(mode);
     }
+    static com.getcapacitor.JSObject audioDiagnostics() {
+        RoomService service = current.get(); return service == null || service.routes == null ? new com.getcapacitor.JSObject() : service.routes.diagnostics();
+    }
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private String serverUrl = "", token = "", roomId = "", leaveToken = "";
