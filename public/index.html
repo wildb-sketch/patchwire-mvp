@@ -671,7 +671,7 @@ const audio=window.createRoomAudio({
  getIce:()=>ICE,refreshIce:()=>loadIce(),getTrack:()=>R.mic&&iSpeak()?R.mic:null,
  signalingReady:()=>!!ws&&ws.readyState===1,
  send:(to,data)=>{if(!ws||ws.readyState!==1)return false;ws.send(JSON.stringify({type:'room:signal',to,data}));return true},
- onTrack:(u,e,p)=>{if(!p.audio){p.audio=document.createElement('audio');p.audio.autoplay=true;p.audio.muted=S.deaf;document.body.append(p.audio)}p.audio.srcObject=e.streams[0]||new MediaStream([e.track]);p.audio.play().catch(()=>{});watch(u,new MediaStream([e.track]))},
+ onTrack:(u,e,p)=>{if(!p.audio){p.audio=document.createElement('audio');p.audio.autoplay=true;p.audio.muted=S.deaf;document.body.append(p.audio)}p.audio.srcObject=e.streams[0]||new MediaStream([e.track]);p.audio.play().then(refreshNativeAudioRoute).catch(()=>{});watch(u,new MediaStream([e.track]))},
  onRemove:u=>{delete R.an[u]},
  onStatus:(u,state)=>{if(!S.room?.members.some(m=>m.uid===u))return;
   if(state==='recovered')failedAudioPeers.delete(u);
@@ -736,6 +736,7 @@ function roomCall(method,options={}){
 async function optionalRoomCall(method){
  try{return await roomCall(method)}catch(e){if(/unimplemented|not implemented/i.test((e.code||'')+' '+(e.message||'')))return {};throw e}
 }
+function refreshNativeAudioRoute(){if(androidRoom()&&S.room)optionalRoomCall('prepareAudioRoute').catch(e=>console.debug('Room output refresh',e.code||e.name))}
 async function captureRoute(){
  // Older installed APKs can wait for a route that needs active capture to finish connecting.
  let timer;try{return await Promise.race([optionalRoomCall('prepareAudioRoute'),new Promise(resolve=>{timer=setTimeout(()=>resolve({}),800)})])}finally{clearTimeout(timer)}
@@ -798,6 +799,8 @@ function captureMic(expectedEpoch){
     if(stream!==bootstrap)bootstrap.getTracks().forEach(track=>track.stop());
    }
   }
+  // AudioRecord startup can reset Android output after the earlier routing snapshot.
+  refreshNativeAudioRoute();
   stream.whassabiRoute=route.managed?route.generation:0;
   return stream;
  };

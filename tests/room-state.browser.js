@@ -26,7 +26,16 @@ test('stage changes render during blocked Android startup; host removal explains
   const [host, guest] = pages;
   await host.evaluate(() => wsSend({ type: 'room:create', title: 'Stage rendering fixture' })); await host.waitForFunction(() => S.room && R.mic);
   const roomId = await host.evaluate(() => S.room.id), guestId = await guest.evaluate(() => S.me.id);
-  await guest.evaluate(id => wsSend({ type: 'room:join', id }), roomId); await guest.waitForSelector('#hand'); await guest.click('#hand');
+  await guest.evaluate(() => {
+   window.playbackRouteChecks = 0;
+   window.Capacitor = { getPlatform: () => 'android', addListener: () => Promise.resolve(), nativePromise: async (plugin, method) => {
+    if (method === 'prepareAudioRoute') { window.playbackRouteChecks++; return { managed: true, generation: 1, route: 'speaker' }; } return {};
+   } };
+  });
+  await guest.evaluate(id => wsSend({ type: 'room:join', id }), roomId); await guest.waitForSelector('#hand');
+  await guest.waitForFunction(() => window.playbackRouteChecks > 0 && Object.values(R.peers).some(p => p.audio && !p.audio.paused));
+  assert.equal(await guest.evaluate(() => R.mic), null, 'Listener playback must refresh output without opening a microphone');
+  await guest.click('#hand');
   await host.waitForFunction(id => S.room.members.some(m => m.uid === id && m.hand), guestId);
   await guest.evaluate(() => {
    window.nativeWaiting = false; window.holdNative = () => { window.nativeWaiting = false; window.nativeGate = new Promise(resolve => window.releaseNative = resolve); }; window.holdNative();

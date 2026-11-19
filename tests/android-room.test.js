@@ -166,6 +166,11 @@ for (const file of ['index.html', 'neon.html']) {
   h.action({action:'audioRouteChanged',ready:true,generation:1,route:'speaker',failed:true,failedRoute:'bluetooth'});
   assert.match(h.toasts[0],/Bluetooth.*Switched to the phone loudspeaker/);assert.equal(h.context.S.muted,false);
  });
+ test(`${file}: microphone startup immediately refreshes Android output after AudioRecord can reset it`, async () => {
+  let capturing=false,refreshed=false;const track=stream();
+  const h=harness(file,{native:async method=>{if(method==='prepareAudioRoute'){if(capturing)refreshed=true;return{managed:true,generation:1,route:'speaker'}}return{}},capture:async()=>{capturing=true;return track}});
+  await h.context.syncMic();await tick();assert.equal(refreshed,true);assert.equal(h.context.R.mic,track.track);assert.equal(h.context.S.muted,false);
+ });
  test(`${file}: connected earbuds wait for native route confirmation before microphone capture`, async () => {
   const ready = deferred(); let captures = 0, preparing = false;
   const h = harness(file, { native: async method => { if (method === 'prepareAudioRoute') { preparing = true; return ready.promise; } return {}; }, capture: async () => { captures++; return stream(); } });
