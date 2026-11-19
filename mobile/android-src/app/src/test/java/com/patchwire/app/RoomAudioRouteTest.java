@@ -120,18 +120,49 @@ public class RoomAudioRouteTest {
         routes.start(); idle(300); assertTrue(audio.isSpeakerphoneOn()); routes.stop();
         assertFalse(audio.isSpeakerphoneOn()); assertEquals(AudioManager.MODE_NORMAL, audio.getMode());
     }
-    @Test @Config(sdk = 31) public void android12SelectedBluetoothOutputAloneDoesNotConfirmTheHeadsetMicrophoneLink() {
-        available(speaker,bluetooth);routes.start();assertEquals(AudioDeviceInfo.TYPE_BLUETOOTH_SCO,audio.getCommunicationDevice().getType());
-        assertNull(ready());idle(500);assertNull(ready());
-        context.sendBroadcast(new Intent(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED).putExtra(AudioManager.EXTRA_SCO_AUDIO_STATE,AudioManager.SCO_AUDIO_STATE_CONNECTED));idle(1);
-        assertEquals("true:bluetooth",ready());assertTrue(audio.isBluetoothScoOn());
-        routes.stop();assertFalse(audio.isBluetoothScoOn());assertEquals(AudioManager.MODE_NORMAL,audio.getMode());
+    @Test @Config(sdk = 31, shadows = ModernOnlyAudio.class) public void android12UsesOnlyTheCommunicationDeviceApiWithoutWaitingForLegacyScoBroadcasts() {
+        available(speaker, bluetooth); routes.start(); assertEquals("true:bluetooth", ready());
+        assertFalse(audio.isBluetoothScoOn());
+        context.sendBroadcast(new Intent(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED).putExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, AudioManager.SCO_AUDIO_STATE_DISCONNECTED)); idle(300);
+        assertEquals("true:bluetooth", ready());
+        shadow.removeAvailableCommunicationDevice(bluetooth, true); idle(300); assertEquals("true:speaker", ready());
+        routes.stop(); assertEquals(AudioManager.MODE_NORMAL, audio.getMode());
     }
-    @Test @Config(sdk = 31) public void android12ScoLossRequiresAConfirmedReconnectionAndHasABoundedFallback() {
-        available(speaker,bluetooth);routes.start();
-        context.sendBroadcast(new Intent(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED).putExtra(AudioManager.EXTRA_SCO_AUDIO_STATE,AudioManager.SCO_AUDIO_STATE_CONNECTED));idle(1);assertEquals("true:bluetooth",ready());
-        context.sendBroadcast(new Intent(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED).putExtra(AudioManager.EXTRA_SCO_AUDIO_STATE,AudioManager.SCO_AUDIO_STATE_DISCONNECTED));idle(1);assertNull(ready());
-        idle(31000);assertEquals("true:speaker",ready());assertFalse(audio.isBluetoothScoOn());
+    @Test @Config(sdk = 31, shadows = DelayedAudio.class) public void captureCanStartBeforeAndroidFinishesTheBluetoothRoute() {
+        available(speaker, bluetooth); routes.start(); assertNull(ready());
+        final String[] capture = {null}; final long[] generation = {-1};
+        routes.captureRoute((managed, route, serial) -> { capture[0] = managed + ":" + route; generation[0] = serial; });
+        assertEquals("true:system", capture[0]); assertEquals(0, generation[0]);
+        // An OEM can defer this confirmation until the app has started AudioRecord.
+        DelayedAudio delayed = Shadow.extract(audio); delayed.confirm(); idle(300);
+        routes.captureRoute((managed, route, serial) -> { capture[0] = managed + ":" + route; generation[0] = serial; });
+        assertEquals("true:bluetooth", capture[0]); assertTrue(generation[0] > 0);
+        routes.stop(); routes.captureRoute((managed, route, serial) -> assertFalse(managed));
+    }
+    @Implements(AudioManager.class) public static class ModernOnlyAudio extends ShadowAudioManager {
+        @Implementation protected void startBluetoothSco() { throw new AssertionError("Do not mix legacy SCO with setCommunicationDevice on Android 12+"); }
+    }
+    @Test @Config(sdk = 31) public void disconnectingTheHeadsetReturnsToLoudspeakerEvenWhileTheDeviceListIsStale() {
+        AudioDeviceInfo earpiece = device(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE);
+        available(earpiece, speaker, bluetooth); routes.start(); assertEquals("true:bluetooth", ready());
+        context.sendBroadcast(new Intent(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED).putExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED)); idle(300);
+        assertEquals("true:speaker", ready()); assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, audio.getCommunicationDevice().getType());
+        routes.refreshNow(); idle(500); assertEquals("true:speaker", ready());
+        context.sendBroadcast(new Intent(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED).putExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_CONNECTED)); idle(300);
+        assertEquals("true:bluetooth", ready());
+    }
+    @Test @Config(sdk = 31) public void webViewResettingCommunicationModeCannotLeavePlaybackOnTheCallEarpiece() {
+        AudioDeviceInfo earpiece = device(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE);
+        available(speaker, earpiece); routes.start(); assertEquals("true:speaker", ready());
+        audio.setMode(AudioManager.MODE_NORMAL); audio.setCommunicationDevice(earpiece); idle(600);
+        assertEquals(AudioManager.MODE_IN_COMMUNICATION, audio.getMode());
+        assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, audio.getCommunicationDevice().getType());
+    }
+    @Test @Config(sdk = 31) public void modeRecoveryDoesNotTakeOverAnActiveTelephoneCall() {
+        available(speaker); routes.start(); audio.setMode(AudioManager.MODE_IN_CALL); idle(600);
+        assertEquals(AudioManager.MODE_IN_CALL, audio.getMode());
+        audio.setMode(AudioManager.MODE_NORMAL); idle(600);
+        assertEquals(AudioManager.MODE_IN_COMMUNICATION, audio.getMode()); assertEquals("true:speaker", ready());
     }
     @Implements(AudioManager.class) public static class DelayedAudio extends ShadowAudioManager {
         boolean delay = true;

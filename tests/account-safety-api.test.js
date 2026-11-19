@@ -31,7 +31,10 @@ test('real HTTP and WebSocket flows enforce blocks, private room discovery, host
  await g.wait(event => event.type === 'rooms' && event.rooms.some(r => r.id === room.id));
  g.ws.send(JSON.stringify({ type: 'room:join', id: room.id })); await g.wait(event => event.type === 'room:joined');
  o.ws.send(JSON.stringify({ type: 'room:kick', uid: host.me.id }));
- h.ws.send(JSON.stringify({ type: 'room:kick', uid: guest.me.id })); await g.wait(event => event.type === 'room:removed');
+ h.ws.send(JSON.stringify({ type: 'room:kick', uid: guest.me.id })); const removal = await g.wait(event => event.type === 'room:removed');
+ assert.match(removal.reason, /hidden.*cannot rejoin until it ends/);
+ await g.wait(event => event.type === 'rooms' && !event.rooms.some(r => r.id === room.id));
+ await h.wait(event => event.type === 'rooms' && event.rooms.some(r => r.id === room.id));
  g.ws.send(JSON.stringify({ type: 'room:join', id: room.id })); await g.wait(event => event.type === 'room:error' && event.error.includes('cannot join'));
  assert.equal((await api('/block', guest, { id: host.me.id })).status, 200);
  assert.equal((await api('/friends/request', host, { id: guest.me.id })).status, 404);

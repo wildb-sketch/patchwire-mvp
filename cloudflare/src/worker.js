@@ -476,7 +476,7 @@ export class Hub extends DurableObject {
     if (d.type === 'room:kick') {
       if (cur.host !== me.id || d.uid === me.id || !cur.members.has(d.uid) || this.limited(me.id, 'kick', 20, 60000)) return;
       cur.removed ||= new Set(); cur.removed.add(d.uid);
-      return this.removeMember(cur, d.uid, 'The host removed you from this room.');
+      return this.removeMember(cur, d.uid, 'The host removed you. This room is hidden and you cannot rejoin until it ends.');
     }
     if (d.type === 'room:hand') { cur.members.get(me.id).hand = !!d.on; return this.roomUpdate(cur); }
     if (d.type === 'room:role') {

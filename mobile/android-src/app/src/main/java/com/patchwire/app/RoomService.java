@@ -34,7 +34,7 @@ public class RoomService extends Service {
     static void prepareAudioRoute(RoomAudioRoute.Ready callback) {
         RoomService service = current.get();
         if (service == null || service.routes == null || !active) callback.result(false, "system", 0);
-        else service.routes.awaitReady(callback);
+        else service.routes.captureRoute(callback);
     }
     static void refreshAudioRoute() {
         RoomService service = current.get(); if (service != null && service.routes != null) service.routes.resume();

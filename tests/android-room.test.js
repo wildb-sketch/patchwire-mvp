@@ -134,6 +134,26 @@ for (const file of ['index.html', 'neon.html']) {
   h.context.ws.onmessage({ data: JSON.stringify({ type: 'room:left', id: 'room1' }) }); await tick();
   assert.equal(h.context.S.room, null); assert.equal(h.context.R.mic, null); assert.equal(h.context.S.roomLeaveToken, '');
  });
+ test(`${file}: stage acceptance repaints immediately while the native service is still starting`, async () => {
+  const pending=deferred();let starting=false,paintedRole;
+  const h=harness(file,{native:async method=>{if(method==='startRoom'){starting=true;return pending.promise}return{}}});
+  h.context.S.ov={t:'room'};h.context.S.room.members[0].role='listener';h.context.paintOv=()=>{paintedRole=h.context.S.room.members[0].role};
+  h.context.connect();const sync=h.context.syncMic();while(!starting)await tick();
+  const room=JSON.parse(JSON.stringify(h.context.S.room));room.members[0].role='speaker';
+  h.context.ws.onmessage({data:JSON.stringify({type:'room:state',room})});
+  assert.equal(paintedRole,'speaker');assert.equal(h.context.R.mic,null);
+  pending.resolve({});await sync;assert(h.context.R.mic.enabled);
+ });
+ test(`${file}: moving a speaker to the audience stops capture before a delayed native call finishes`, async () => {
+  const pending=deferred();let blocked=false,starting=false,paintedRole;
+  const h=harness(file,{native:async method=>{if(method==='startRoom'&&blocked){starting=true;return pending.promise}return{}}});
+  await h.context.syncMic();const previous=h.context.R.mic;h.context.S.ov={t:'room'};h.context.paintOv=()=>{paintedRole=h.context.S.room.members[0].role};
+  h.context.connect();blocked=true;const sync=h.context.syncMic();while(!starting)await tick();
+  const room=JSON.parse(JSON.stringify(h.context.S.room));room.members[0].role='listener';
+  h.context.ws.onmessage({data:JSON.stringify({type:'room:state',room})});
+  assert.equal(paintedRole,'listener');assert.equal(previous.readyState,'ended');assert.equal(h.context.R.mic,null);
+  pending.resolve({});await sync;assert.equal(h.context.R.mic,null);
+ });
  test(`${file}: connected earbuds wait for native route confirmation before microphone capture`, async () => {
   const ready = deferred(); let captures = 0, preparing = false;
   const h = harness(file, { native: async method => { if (method === 'prepareAudioRoute') { preparing = true; return ready.promise; } return {}; }, capture: async () => { captures++; return stream(); } });
@@ -217,7 +237,7 @@ for (const file of ['index.html', 'neon.html']) {
   const h = harness(file, { native: async method => method === 'prepareAudioRoute' ? { managed: true, generation: 1 } : {}, capture: async () => {
    if (++captures === 1) throw Object.assign(Error('device transitioning'), { name: 'NotReadableError' }); return stream();
   } });
-  h.context.setTimeout = callback => queueMicrotask(callback); h.context.S.muted = true;
+  h.context.setTimeout = (callback,ms) => {if(ms===250)queueMicrotask(callback)}; h.context.S.muted = true;
   await h.context.syncMic(); assert.equal(captures, 2); assert(h.context.R.mic); assert.equal(h.context.S.muted, true); assert.equal(h.context.R.mic.enabled, false);
  });
  test(`${file}: Android headset input is selected explicitly after device labels become available, with gain boost off`, async () => {
@@ -237,6 +257,49 @@ for (const file of ['index.html', 'neon.html']) {
   },capture:async()=>{captures++;return stream()}});
   const sync=h.context.syncMic();while(!inspecting)await tick();h.context.cleanup();pending.resolve({});await sync;
   assert.equal(captures,0);assert.equal(h.context.R.mic,null);
+ });
+ test(`${file}: route confirmation during bootstrap capture replaces the provisional microphone`, async () => {
+  let confirmed=false,started=false,captures=0;const pending=deferred(),bootstrap=stream();
+  const h=harness(file,{native:async method=>method==='prepareAudioRoute'?{managed:true,generation:confirmed?20:0,route:confirmed?'bluetooth':'system'}:{},capture:async()=>{
+   if(++captures===1){started=true;return pending.promise}return stream();
+  }});
+  h.context.S.muted=true;const sync=h.context.syncMic();while(!started)await tick();
+  confirmed=true;h.action({action:'audioRouteChanged',ready:true,generation:20,route:'bluetooth'});pending.resolve(bootstrap);await sync;
+  assert.equal(captures,2);assert.equal(bootstrap.track.readyState,'ended');assert.equal(h.context.R.micRoute,20);
+  assert.equal(h.context.S.muted,true);assert.equal(h.context.R.mic.enabled,false);assert(h.context.S.room);
+ });
+ test(`${file}: an older APK waiting for Bluetooth cannot block initial microphone capture`, async () => {
+  const pending=deferred();let timeout,preparing=false,captures=0;
+  const h=harness(file,{native:async method=>{if(method==='prepareAudioRoute'){preparing=true;return pending.promise}return{}},capture:async()=>{captures++;return stream()}});
+  h.context.setTimeout=(callback,ms)=>{if(ms===800)timeout=callback;return 1};
+  const sync=h.context.syncMic();while(!preparing||!timeout)await tick();timeout();await sync;
+  assert.equal(captures,1);assert(h.context.R.mic.enabled);assert.equal(h.context.S.muted,false);
+  pending.resolve({managed:true,generation:22,route:'bluetooth'});h.action({action:'audioRouteChanged',ready:true,generation:22});await h.context.syncMic();
+  assert.equal(captures,2);assert.equal(h.context.R.micRoute,22);
+ });
+ test(`${file}: a busy advertised headset input does not fail an otherwise usable initial connection`, async () => {
+  let captures=0;const h=harness(file,{native:async method=>method==='prepareAudioRoute'?{managed:true,generation:1,route:'bluetooth'}:{},capture:async options=>{
+   captures++;if(options.audio.deviceId)throw Object.assign(Error('headset not ready'),{name:'NotReadableError'});return stream();
+  }});
+  h.context.navigator.mediaDevices.enumerateDevices=async()=>[{kind:'audioinput',deviceId:'bt',label:'Bluetooth headset'}];
+  await h.context.syncMic();assert.equal(captures,2);assert(h.context.R.mic.enabled);assert.equal(h.context.S.muted,false);assert.equal(h.toasts.length,0);
+ });
+ test(`${file}: a late headset capture failure keeps the already working microphone alive`, async () => {
+  let captures=0;const bootstrap=stream();
+  const h=harness(file,{native:async method=>method==='prepareAudioRoute'?{managed:true,generation:1,route:'bluetooth'}:{},capture:async options=>{
+   captures++;if(options.audio.deviceId)throw Object.assign(Error('headset not ready'),{name:'AbortError'});return bootstrap;
+  }});
+  h.context.navigator.mediaDevices.enumerateDevices=async()=>captures?[{kind:'audioinput',deviceId:'bt',label:'Bluetooth headset'}]:[];
+  await h.context.syncMic();assert.equal(captures,2);assert.equal(h.context.R.mic,bootstrap.track);assert.equal(bootstrap.track.readyState,'live');assert.equal(h.context.S.muted,false);
+ });
+ test(`${file}: headset fallback does not conceal a microphone permission rejection`, async () => {
+  let captures=0;const bootstrap=stream();
+  const h=harness(file,{native:async method=>method==='prepareAudioRoute'?{managed:true,generation:1,route:'bluetooth'}:{},capture:async options=>{
+   captures++;if(options.audio.deviceId)throw Object.assign(Error('permission revoked'),{name:'NotAllowedError'});return bootstrap;
+  }});
+  h.context.navigator.mediaDevices.enumerateDevices=async()=>captures?[{kind:'audioinput',deviceId:'bt',label:'Bluetooth headset'}]:[];
+  await h.context.syncMic();assert.equal(captures,2);assert.equal(bootstrap.track.readyState,'ended');assert.equal(h.context.R.mic,null);
+  assert.equal(h.context.S.muted,true);assert(h.toasts.some(t=>t.includes('Android Settings')));
  });
  test(`${file}: unusable advertised headset inputs fall back once without leaking capture tracks`, async () => {
   let captures=0;const h=harness(file,{native:async method=>method==='prepareAudioRoute'?{managed:true,generation:1,route:'bluetooth'}:{},capture:async options=>{
