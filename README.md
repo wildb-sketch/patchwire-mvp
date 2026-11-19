@@ -1,15 +1,17 @@
 # Whassabi Android test APKs
 
-[Download the latest Whassabi APK — Bluetooth/headset fix](https://github.com/wildb-sketch/patchwire-mvp/raw/refs/heads/android-test-download-20261117/whassabi-bluetooth-fix.apk)
+[Download the latest Whassabi APK — Android 12 headset input and new logo](https://github.com/wildb-sketch/patchwire-mvp/raw/refs/heads/android-test-download-20261117/whassabi-android12-headset.apk)
 
-Install over the previous APK. Allow **Nearby devices** if Android asks when you join or start voice. The signing certificate is unchanged.
+Install over the previous APK; the signing certificate and application ID are unchanged.
 
-This update manages the phone/headset communication route, waits for Bluetooth microphone readiness and switches the active microphone when headphones connect or disconnect. Room membership, existing WebRTC connections and the current user mute are retained. Wired/USB headsets and Android 12+ HFP/LE routing are covered. Chat controls, file sharing and friend-request push from the previous update remain included.
+This update waits for Android 12/12L Bluetooth SCO call-audio confirmation before capture and selects the browser-exposed headset microphone when available. Automatic microphone gain control is disabled, retaining echo cancellation and noise suppression. The supplied yellow/purple Whassabi logo is included in launcher, round, adaptive and launch-screen resources.
 
-Source: [PR #14](https://github.com/wildb-sketch/patchwire-mvp/pull/14), merged as `673dd0366dc00bf8c7353dcc5e6e7bb775e90919`. This APK was built from the same reviewed source at `4bc6079514c7a221b0d126907e18a8386b74eb6d`. [GitHub checks](https://github.com/wildb-sketch/patchwire-mvp/actions/runs/44352699751) passed, including Android build/lint/native tests, Node/Worker checks and browser/WebRTC recovery tests.
+**Broadcast & Audio Hardware** now reports the actual recording input separately from selected output. Bluetooth playback alone does not confirm the earbud microphone. Missing recording information stays unverified. Device diagnostics remain local.
 
-Physical earbud firmware and Android audio drivers require a phone check. With another participant listening, test earbuds connected before app launch, connect/disconnect/reconnect during the room, and repeat while muted and screen-locked. Verify both playback and the earbud microphone. [Detailed voice testing notes](https://github.com/wildb-sketch/patchwire-mvp/blob/main/mobile/ANDROID-VOICE-TESTING.md).
+Source: [PR #15](https://github.com/wildb-sketch/patchwire-mvp/pull/15), merged as `af6c877fae0bd9506680eb6f418c1703d8fba593` and built from reviewed head `5fc2656100c4cefa18bc69dff3b9070db9d45d3f`. [GitHub checks](https://github.com/wildb-sketch/patchwire-mvp/actions/runs/44509741901) passed, covering Android assembly, lint, 29 native tests, 130 Node checks, 5 Worker runtime tests and 9 browser/WebRTC tests.
 
-Previous APKs: [chat tools](https://github.com/wildb-sketch/patchwire-mvp/raw/refs/heads/android-test-download-20261117/whassabi-chat-tools.apk) · [notification fix](https://github.com/wildb-sketch/patchwire-mvp/raw/refs/heads/android-test-download-20261117/whassabi-notifications-fix.apk) · [push preview](https://github.com/wildb-sketch/patchwire-mvp/raw/refs/heads/android-test-download-20261117/whassabi-push-debug.apk).
+Physical validation remains necessary on Samsung Note 10+ / Android 12: with another participant listening, connect earbuds before joining, then disconnect/reconnect during the room. Verify playback and actual received speech through the earbud mic; check **Active microphone** in the hardware panel. Repeat while muted and screen-locked. [Detailed voice testing notes](https://github.com/wildb-sketch/patchwire-mvp/blob/main/mobile/ANDROID-VOICE-TESTING.md).
+
+Earlier APKs: [previous Bluetooth attempt](https://github.com/wildb-sketch/patchwire-mvp/raw/refs/heads/android-test-download-20261117/whassabi-bluetooth-fix.apk) · [chat tools](https://github.com/wildb-sketch/patchwire-mvp/raw/refs/heads/android-test-download-20261117/whassabi-chat-tools.apk) · [notification fix](https://github.com/wildb-sketch/patchwire-mvp/raw/refs/heads/android-test-download-20261117/whassabi-notifications-fix.apk) · [push preview](https://github.com/wildb-sketch/patchwire-mvp/raw/refs/heads/android-test-download-20261117/whassabi-push-debug.apk).
 
 Only public test APKs and download information are included. SHA256SUMS lists the file checksums.
