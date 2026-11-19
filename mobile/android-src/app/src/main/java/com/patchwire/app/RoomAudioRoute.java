@@ -34,10 +34,11 @@ final class RoomAudioRoute {
     private final List<Ready> waiting = new ArrayList<>();
     private Api23 devices;
     private Api31 communication;
+    private RoomBluetoothDevices bluetoothDevices;
     private boolean running, settled, modeOwned, receiverRegistered, scoRequested, scoConnected;
     private boolean previousSpeaker;
     private Boolean legacyHeadset;
-    private String route = "speaker", key = "", blockedBluetooth = "", failedSource = "";
+    private String route = "speaker", key = "", captureKey = "", blockedBluetooth = "", failedSource = "", outputMode;
     private long generation;
     private final Runnable refresh = this::refreshNow;
     private final Runnable legacyTimeout = () -> { if (running && !settled && "bluetooth".equals(route)) { blockedBluetooth = "legacy"; legacyFallback(true); } };
@@ -46,6 +47,7 @@ final class RoomAudioRoute {
             if (!running) return;
             try {
             if (BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED.equals(intent.getAction())) {
+                if (communication != null) { scheduleRefresh(); return; }
                 legacyHeadset = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1) == BluetoothProfile.STATE_CONNECTED;
                 blockedBluetooth = ""; if (communication != null) communication.unavailable = false; scheduleRefresh();
             } else if (AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED.equals(intent.getAction()) && communication == null) {
@@ -62,7 +64,16 @@ final class RoomAudioRoute {
     };
 
     RoomAudioRoute(Context context, AudioManager audio, Listener listener) {
-        this.context = context; this.audio = audio; this.listener = listener;
+        this.context = context; this.audio = audio; this.listener = listener; outputMode = outputMode(context);
+    }
+    static String outputMode(Context context) { return context.getSharedPreferences("whassabi_audio", Context.MODE_PRIVATE).getString("output_mode", "auto"); }
+    static boolean validOutputMode(String mode) { return "auto".equals(mode) || "speaker".equals(mode) || "bluetooth".equals(mode); }
+    static void saveOutputMode(Context context, String mode) { context.getSharedPreferences("whassabi_audio", Context.MODE_PRIVATE).edit().putString("output_mode", mode).apply(); }
+    void setOutputMode(String mode) {
+        if (!validOutputMode(mode)) return;
+        outputMode = mode; saveOutputMode(context, mode); blockedBluetooth = "";
+        if (communication != null) { communication.failedBluetooth.clear(); communication.unavailable = false; }
+        refreshNow();
     }
     static boolean bluetoothAllowed(Context context) {
         return Build.VERSION.SDK_INT < 31 || ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
@@ -76,9 +87,13 @@ final class RoomAudioRoute {
             filter.addAction(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED); filter.addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED);
             ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED); receiverRegistered = true;
             if (Build.VERSION.SDK_INT >= 23) { devices = new Api23(); devices.start(); }
-            if (Build.VERSION.SDK_INT >= 31) { communication = new Api31(); communication.start(); }
+            if (Build.VERSION.SDK_INT >= 31) {
+                communication = new Api31(); communication.start();
+                bluetoothDevices = new RoomBluetoothDevices(context, handler, () -> { communication.failedBluetooth.clear(); communication.unavailable = false; scheduleRefresh(); });
+                bluetoothDevices.start();
+            }
             refreshNow();
-        } catch (RuntimeException error) { failSafely(); }
+        } catch (RuntimeException error) { android.util.Log.w("WhassabiRoom", "Unable to start room routing", error); failSafely(); }
     }
     void scheduleRefresh() {
         if (!running) return;
@@ -87,10 +102,11 @@ final class RoomAudioRoute {
     void refreshNow() {
         if (!running) return;
         try {
+            if (bluetoothDevices != null) bluetoothDevices.refresh();
             if (audio.getMode() == AudioManager.MODE_IN_CALL) { if (!settled) { begin("system", "call"); finish(false); } return; }
             if (audio.getMode() != AudioManager.MODE_IN_COMMUNICATION) { audio.setMode(AudioManager.MODE_IN_COMMUNICATION); modeOwned = true; }
             if (communication != null) communication.select(); else legacySelect();
-        } catch (RuntimeException error) { failSafely(); }
+        } catch (RuntimeException error) { android.util.Log.w("WhassabiRoom", "Unable to apply room routing", error); failSafely(); }
     }
     void resume() {
         if (!running) return;
@@ -114,7 +130,11 @@ final class RoomAudioRoute {
         callback.result(running, running && settled ? route : "system", running && settled ? generation : 0);
     }
     private void begin(String nextRoute, String nextKey) {
-        route = nextRoute; key = nextKey; settled = false; generation = SERIAL.incrementAndGet();
+        route = nextRoute; key = nextKey; settled = false;
+        String identity = "speaker".equals(nextRoute) ? "speaker" : nextKey;
+        if (generation == 0 || !"system".equals(nextRoute) && !identity.equals(captureKey)) {
+            generation = SERIAL.incrementAndGet(); if (!"system".equals(nextRoute)) captureKey = identity;
+        }
         listener.changed(false, route, generation, false, "");
     }
     private void finish(boolean failed) {
@@ -137,8 +157,8 @@ final class RoomAudioRoute {
         catch (RuntimeException ignored) { return false; }
     }
     private void legacySelect() {
-        boolean wired = audio.isWiredHeadsetOn() || devices != null && devices.hasWired();
-        boolean bluetooth = !wired && legacyBluetooth() && !"legacy".equals(blockedBluetooth);
+        boolean wired = "auto".equals(outputMode) && (audio.isWiredHeadsetOn() || devices != null && devices.hasWired());
+        boolean bluetooth = !"speaker".equals(outputMode) && !wired && legacyBluetooth() && !"legacy".equals(blockedBluetooth);
         String next = bluetooth ? "bluetooth" : wired ? "wired" : "speaker";
         if (next.equals(route) && (bluetooth ? scoRequested && (!settled || scoConnected && audio.isBluetoothScoOn()) : !settled && key.equals(next) || settled && audio.isSpeakerphoneOn() == !wired)) return;
         begin(next, next);
@@ -152,7 +172,7 @@ final class RoomAudioRoute {
     private void legacyFallback(boolean failed) {
         failedSource = failed ? route : "";
         if (scoRequested) { audio.stopBluetoothSco(); audio.setBluetoothScoOn(false); scoRequested = false; scoConnected = false; }
-        boolean wired = audio.isWiredHeadsetOn() || devices != null && devices.hasWired();
+        boolean wired = "auto".equals(outputMode) && (audio.isWiredHeadsetOn() || devices != null && devices.hasWired());
         String next = wired ? "wired" : "speaker";
         if (!key.equals(next) || settled) begin(next, next);
         audio.setSpeakerphoneOn(!wired);
@@ -163,6 +183,7 @@ final class RoomAudioRoute {
         if (!running) return;
         running = false; handler.removeCallbacksAndMessages(null);
         if (devices != null) devices.stop();
+        if (bluetoothDevices != null) bluetoothDevices.stop();
         if (communication != null) communication.stop();
         if (receiverRegistered) { try { context.unregisterReceiver(receiver); } catch (RuntimeException ignored) {} }
         try { if (scoRequested) { audio.stopBluetoothSco(); audio.setBluetoothScoOn(false); } } catch (RuntimeException ignored) {}
@@ -197,6 +218,7 @@ final class RoomAudioRoute {
         private static final int MAX_REQUESTS = 4;
         private boolean failedRoute, fallbackPending, unavailable;
         private String failedInventory = "";
+        private final java.util.Set<String> failedBluetooth = new java.util.HashSet<>();
         private final Runnable check = () -> { try { check(); } catch (RuntimeException error) { failSafely(); } };
         private final AudioManager.OnModeChangedListener modeChanged = mode -> {
             if (mode != AudioManager.MODE_IN_COMMUNICATION && mode != AudioManager.MODE_IN_CALL) scheduleRefresh();
@@ -207,11 +229,10 @@ final class RoomAudioRoute {
             if (!settled) check();
             else if (device != null && !same(device, requested)) {
                 unavailable = false;
-                if (isBluetooth(device.getType()) && deviceKey(device).equals(blockedBluetooth)) blockedBluetooth = "";
                 // WebView may restore its default when an AudioRecord is released/recreated.
                 // Reassert the same physical route without requesting another capture restart.
                 scheduleRefresh();
-            } else if (device == null) scheduleRefresh();
+            } else if (device == null || "system".equals(route)) { unavailable = false; scheduleRefresh(); }
             } catch (RuntimeException error) { failSafely(); }
         };
         void start() {
@@ -225,13 +246,15 @@ final class RoomAudioRoute {
         }
         void select() {
             List<AudioDeviceInfo> available = audio.getAvailableCommunicationDevices();
-            if (unavailable && inventory(available).equals(failedInventory)) return;
+            if (unavailable && inventory(available).equals(failedInventory) && !same(audio.getCommunicationDevice(), requested)) return;
             unavailable = false;
-            if (available.stream().noneMatch(d -> deviceKey(d).equals(blockedBluetooth))) blockedBluetooth = "";
             AudioDeviceInfo choice = null; int best = -1;
             for (AudioDeviceInfo device : available) {
                 int type = device.getType();
-                if (isBluetooth(type) && (!bluetoothAllowed(context) || deviceKey(device).equals(blockedBluetooth) || type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO && Boolean.FALSE.equals(legacyHeadset))) continue;
+                if ("speaker".equals(outputMode) && type != AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) continue;
+                if ("bluetooth".equals(outputMode) && isWired(type)) continue;
+                if (isBluetooth(type) && (!bluetoothAllowed(context) || failedBluetooth.contains(bluetoothKey(device)))) continue;
+                if (type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO && (bluetoothDevices == null || !bluetoothDevices.permits(device, "bluetooth".equals(outputMode)))) continue;
                 // The room's automatic phone route is the loudspeaker, never the quiet call earpiece.
                 int score = isWired(type) ? 300 : isBluetooth(type) ? 200 : type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ? 100 : -1;
                 if (score < 0) continue;
@@ -261,7 +284,11 @@ final class RoomAudioRoute {
             if (same(audio.getCommunicationDevice(), requested)) { finish(failedRoute); return; }
             if (SystemClock.uptimeMillis() >= deadline) {
                 if (!fallbackPending) fallback(true);
-                else { audio.clearCommunicationDevice(); requested = null; unavailable = true; failedInventory = inventory(audio.getAvailableCommunicationDevices()); begin("system", "system"); finish(true); }
+                else {
+                    // Keep the requested loudspeaker preference. Clearing it here exposes Android's
+                    // call earpiece and starts another WebView/output recovery cycle.
+                    unavailable = true; failedInventory = inventory(audio.getAvailableCommunicationDevices()); begin("system", "system"); finish(true);
+                }
                 return;
             }
             // WebView can overwrite the first speaker request during AudioRecord startup.
@@ -276,8 +303,8 @@ final class RoomAudioRoute {
         void fallback(boolean failed) {
             handler.removeCallbacks(check);
             if (!fallbackPending) failedSource = requested == null ? "system" : kind(requested.getType());
-            if (requested != null && isBluetooth(requested.getType())) blockedBluetooth = deviceKey(requested);
-            audio.clearCommunicationDevice(); requested = null;
+            if (requested != null && isBluetooth(requested.getType())) failedBluetooth.add(bluetoothKey(requested));
+            requested = null;
             for (AudioDeviceInfo device : audio.getAvailableCommunicationDevices()) if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) { requested = device; break; }
             // Recovering the requested phone speaker is success, not a headset failure.
             failedRoute = failed && !"speaker".equals(failedSource); fallbackPending = true; requests = 0;
@@ -291,5 +318,9 @@ final class RoomAudioRoute {
         }
         boolean same(AudioDeviceInfo a, AudioDeviceInfo b) { return a != null && b != null && a.getId() == b.getId() && a.getType() == b.getType(); }
         String deviceKey(AudioDeviceInfo device) { return device.getType() + ":" + device.getId(); }
+        String bluetoothKey(AudioDeviceInfo device) {
+            String address = RoomBluetoothDevices.normalize(device.getAddress());
+            return device.getType() + ":" + (address.isEmpty() ? "unidentified" : address);
+        }
     }
 }
