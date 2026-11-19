@@ -134,6 +134,26 @@ for (const file of ['index.html', 'neon.html']) {
   h.context.ws.onmessage({ data: JSON.stringify({ type: 'room:left', id: 'room1' }) }); await tick();
   assert.equal(h.context.S.room, null); assert.equal(h.context.R.mic, null); assert.equal(h.context.S.roomLeaveToken, '');
  });
+ test(`${file}: stage acceptance repaints immediately while the native service is still starting`, async () => {
+  const pending=deferred();let starting=false,paintedRole;
+  const h=harness(file,{native:async method=>{if(method==='startRoom'){starting=true;return pending.promise}return{}}});
+  h.context.S.ov={t:'room'};h.context.S.room.members[0].role='listener';h.context.paintOv=()=>{paintedRole=h.context.S.room.members[0].role};
+  h.context.connect();const sync=h.context.syncMic();while(!starting)await tick();
+  const room=JSON.parse(JSON.stringify(h.context.S.room));room.members[0].role='speaker';
+  h.context.ws.onmessage({data:JSON.stringify({type:'room:state',room})});
+  assert.equal(paintedRole,'speaker');assert.equal(h.context.R.mic,null);
+  pending.resolve({});await sync;assert(h.context.R.mic.enabled);
+ });
+ test(`${file}: moving a speaker to the audience stops capture before a delayed native call finishes`, async () => {
+  const pending=deferred();let blocked=false,starting=false,paintedRole;
+  const h=harness(file,{native:async method=>{if(method==='startRoom'&&blocked){starting=true;return pending.promise}return{}}});
+  await h.context.syncMic();const previous=h.context.R.mic;h.context.S.ov={t:'room'};h.context.paintOv=()=>{paintedRole=h.context.S.room.members[0].role};
+  h.context.connect();blocked=true;const sync=h.context.syncMic();while(!starting)await tick();
+  const room=JSON.parse(JSON.stringify(h.context.S.room));room.members[0].role='listener';
+  h.context.ws.onmessage({data:JSON.stringify({type:'room:state',room})});
+  assert.equal(paintedRole,'listener');assert.equal(previous.readyState,'ended');assert.equal(h.context.R.mic,null);
+  pending.resolve({});await sync;assert.equal(h.context.R.mic,null);
+ });
  test(`${file}: connected earbuds wait for native route confirmation before microphone capture`, async () => {
   const ready = deferred(); let captures = 0, preparing = false;
   const h = harness(file, { native: async method => { if (method === 'prepareAudioRoute') { preparing = true; return ready.promise; } return {}; }, capture: async () => { captures++; return stream(); } });

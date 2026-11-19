@@ -142,6 +142,28 @@ public class RoomAudioRouteTest {
     @Implements(AudioManager.class) public static class ModernOnlyAudio extends ShadowAudioManager {
         @Implementation protected void startBluetoothSco() { throw new AssertionError("Do not mix legacy SCO with setCommunicationDevice on Android 12+"); }
     }
+    @Test @Config(sdk = 31) public void disconnectingTheHeadsetReturnsToLoudspeakerEvenWhileTheDeviceListIsStale() {
+        AudioDeviceInfo earpiece = device(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE);
+        available(earpiece, speaker, bluetooth); routes.start(); assertEquals("true:bluetooth", ready());
+        context.sendBroadcast(new Intent(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED).putExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED)); idle(300);
+        assertEquals("true:speaker", ready()); assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, audio.getCommunicationDevice().getType());
+        routes.refreshNow(); idle(500); assertEquals("true:speaker", ready());
+        context.sendBroadcast(new Intent(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED).putExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_CONNECTED)); idle(300);
+        assertEquals("true:bluetooth", ready());
+    }
+    @Test @Config(sdk = 31) public void webViewResettingCommunicationModeCannotLeavePlaybackOnTheCallEarpiece() {
+        AudioDeviceInfo earpiece = device(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE);
+        available(speaker, earpiece); routes.start(); assertEquals("true:speaker", ready());
+        audio.setMode(AudioManager.MODE_NORMAL); audio.setCommunicationDevice(earpiece); idle(600);
+        assertEquals(AudioManager.MODE_IN_COMMUNICATION, audio.getMode());
+        assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, audio.getCommunicationDevice().getType());
+    }
+    @Test @Config(sdk = 31) public void modeRecoveryDoesNotTakeOverAnActiveTelephoneCall() {
+        available(speaker); routes.start(); audio.setMode(AudioManager.MODE_IN_CALL); idle(600);
+        assertEquals(AudioManager.MODE_IN_CALL, audio.getMode());
+        audio.setMode(AudioManager.MODE_NORMAL); idle(600);
+        assertEquals(AudioManager.MODE_IN_COMMUNICATION, audio.getMode()); assertEquals("true:speaker", ready());
+    }
     @Implements(AudioManager.class) public static class DelayedAudio extends ShadowAudioManager {
         boolean delay = true;
         private AudioDeviceInfo requested;

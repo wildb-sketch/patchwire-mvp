@@ -194,6 +194,9 @@ final class RoomAudioRoute {
         private boolean failedRoute, fallbackPending, unavailable;
         private String failedInventory = "";
         private final Runnable check = this::check;
+        private final AudioManager.OnModeChangedListener modeChanged = mode -> {
+            if (mode != AudioManager.MODE_IN_COMMUNICATION && mode != AudioManager.MODE_IN_CALL) scheduleRefresh();
+        };
         private final AudioManager.OnCommunicationDeviceChangedListener changed = device -> {
             if (!running) return;
             if (!settled) { if (same(device, requested)) check(); }
@@ -205,9 +208,13 @@ final class RoomAudioRoute {
                 scheduleRefresh();
             } else if (device == null) scheduleRefresh();
         };
-        void start() { audio.addOnCommunicationDeviceChangedListener(handler::post, changed); }
+        void start() {
+            audio.addOnCommunicationDeviceChangedListener(handler::post, changed);
+            audio.addOnModeChangedListener(handler::post, modeChanged);
+        }
         void stop() {
             try { audio.removeOnCommunicationDeviceChangedListener(changed); } catch (RuntimeException ignored) {}
+            try { audio.removeOnModeChangedListener(modeChanged); } catch (RuntimeException ignored) {}
             try { audio.clearCommunicationDevice(); } catch (RuntimeException ignored) {}
         }
         void select() {
@@ -218,8 +225,10 @@ final class RoomAudioRoute {
             AudioDeviceInfo choice = null; int best = -1;
             for (AudioDeviceInfo device : available) {
                 int type = device.getType();
-                if (isBluetooth(type) && (!bluetoothAllowed(context) || deviceKey(device).equals(blockedBluetooth))) continue;
-                int score = isWired(type) ? 300 : isBluetooth(type) ? 200 : type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ? 100 : type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE ? 10 : -1;
+                if (isBluetooth(type) && (!bluetoothAllowed(context) || deviceKey(device).equals(blockedBluetooth) || type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO && Boolean.FALSE.equals(legacyHeadset))) continue;
+                // The room's automatic phone route is the loudspeaker, never the quiet call earpiece.
+                int score = isWired(type) ? 300 : isBluetooth(type) ? 200 : type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ? 100 : -1;
+                if (score < 0) continue;
                 if (score > best || score == best && same(device, audio.getCommunicationDevice())) { choice = device; best = score; }
             }
             if (choice == null) { if (!settled) { begin("system", "system"); finish(true); } return; }
