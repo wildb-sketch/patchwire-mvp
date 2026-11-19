@@ -80,8 +80,10 @@ test('both complete app designs retain microphone, mute, chat and room across ne
   assert((await guest.locator('#audio-status').textContent()).includes('Output: '+label));await guest.evaluate(()=>closeModal());
  }
  for(const page of pages){
+  await page.bringToFront();
   await page.evaluate(()=>micSheet());
   await page.locator('#copy-audio-diagnostics').click();
+  await page.waitForFunction(()=>document.body.textContent.includes('Audio diagnostics copied.'));
   const text=await page.evaluate(()=>navigator.clipboard.readText()),report=JSON.parse(text);
   assert.equal(report.format,'whassabi-audio-1');assert.equal(report.capture.settings.autoGainControl,true);
   assert.equal(report.capture.constraints.autoGainControl,true);
