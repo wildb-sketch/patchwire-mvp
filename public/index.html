@@ -779,7 +779,7 @@ function captureMic(expectedEpoch){
   let preferred=automaticHeadset?headsetInput(await availableInputs(),names):null,rejectedHeadset=false;
   const checkCapture=()=>{if(expectedEpoch!==undefined&&(expectedEpoch!==roomEpoch||!iSpeak()))throw Object.assign(new Error('Audio session changed'),{code:'STALE_CAPTURE'})};
   const acquire=async(backup)=>{checkCapture();try{return await navigator.mediaDevices.getUserMedia({audio:{...micCons(),...(preferred?{deviceId:{exact:preferred.deviceId}}:{})}})}
-   catch(e){if(e.name!=='OverconstrainedError'&&!(preferred&&['NotReadableError','AbortError','NotFoundError'].includes(e.name)))throw e;checkCapture();if(preferred)rejectedHeadset=true;preferred=null;S.micId=null;try{localStorage.removeItem('pw_mic')}catch(x){}return backup||navigator.mediaDevices.getUserMedia({audio:micCons()})}};
+   catch(e){if(e.name!=='OverconstrainedError'&&!(preferred&&['NotReadableError','AbortError','NotFoundError'].includes(e.name)))throw e;checkCapture();if(preferred)rejectedHeadset=true;preferred=null;S.micId=null;try{localStorage.removeItem('pw_mic')}catch(x){}return backup?.getAudioTracks().some(track=>track.readyState==='live')?backup:navigator.mediaDevices.getUserMedia({audio:micCons()})}};
   let stream;
   try{stream=await acquire()}
   catch(e){

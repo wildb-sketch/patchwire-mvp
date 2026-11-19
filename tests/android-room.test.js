@@ -272,6 +272,15 @@ for (const file of ['index.html', 'neon.html']) {
   h.context.navigator.mediaDevices.enumerateDevices=async()=>captures?[{kind:'audioinput',deviceId:'bt',label:'Bluetooth headset'}]:[];
   await h.context.syncMic();assert.equal(captures,2);assert.equal(h.context.R.mic,bootstrap.track);assert.equal(bootstrap.track.readyState,'live');assert.equal(h.context.S.muted,false);
  });
+ test(`${file}: headset fallback does not conceal a microphone permission rejection`, async () => {
+  let captures=0;const bootstrap=stream();
+  const h=harness(file,{native:async method=>method==='prepareAudioRoute'?{managed:true,generation:1,route:'bluetooth'}:{},capture:async options=>{
+   captures++;if(options.audio.deviceId)throw Object.assign(Error('permission revoked'),{name:'NotAllowedError'});return bootstrap;
+  }});
+  h.context.navigator.mediaDevices.enumerateDevices=async()=>captures?[{kind:'audioinput',deviceId:'bt',label:'Bluetooth headset'}]:[];
+  await h.context.syncMic();assert.equal(captures,2);assert.equal(bootstrap.track.readyState,'ended');assert.equal(h.context.R.mic,null);
+  assert.equal(h.context.S.muted,true);assert(h.toasts.some(t=>t.includes('Android Settings')));
+ });
  test(`${file}: unusable advertised headset inputs fall back once without leaking capture tracks`, async () => {
   let captures=0;const h=harness(file,{native:async method=>method==='prepareAudioRoute'?{managed:true,generation:1,route:'bluetooth'}:{},capture:async options=>{
    captures++;if(options.audio.deviceId?.exact==='unsupported-bt')throw Object.assign(Error('unsupported'),{name:'OverconstrainedError'});return stream();

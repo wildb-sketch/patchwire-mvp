@@ -134,7 +134,7 @@ public class RoomAudioRouteTest {
         routes.captureRoute((managed, route, serial) -> { capture[0] = managed + ":" + route; generation[0] = serial; });
         assertEquals("true:system", capture[0]); assertEquals(0, generation[0]);
         // An OEM can defer this confirmation until the app has started AudioRecord.
-        DelayedAudio delayed = Shadow.extract(audio); delayed.confirm(); idle(1);
+        DelayedAudio delayed = Shadow.extract(audio); delayed.confirm(); idle(300);
         routes.captureRoute((managed, route, serial) -> { capture[0] = managed + ":" + route; generation[0] = serial; });
         assertEquals("true:bluetooth", capture[0]); assertTrue(generation[0] > 0);
         routes.stop(); routes.captureRoute((managed, route, serial) -> assertFalse(managed));
