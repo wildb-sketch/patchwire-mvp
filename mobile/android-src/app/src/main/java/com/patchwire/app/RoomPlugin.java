@@ -124,6 +124,14 @@ public class RoomPlugin extends Plugin {
     @PluginMethod public void getAudioStatus(PluginCall call) {
         getActivity().runOnUiThread(() -> call.resolve(RoomAudioStatus.read(getContext())));
     }
+    @PluginMethod public void setAudioOutput(PluginCall call) {
+        getActivity().runOnUiThread(() -> {
+            String mode = call.getString("route", "");
+            if (!RoomAudioRoute.validOutputMode(mode)) { call.reject("Choose a valid audio output.", "INVALID_AUDIO_OUTPUT"); return; }
+            if ("bluetooth".equals(mode) && !RoomAudioRoute.bluetoothAllowed(getContext())) { call.reject("Allow Nearby devices in Android Settings to use Bluetooth audio.", "BLUETOOTH_PERMISSION_REQUIRED"); return; }
+            RoomService.setAudioOutput(getContext(), mode); call.resolve(RoomAudioStatus.read(getContext()));
+        });
+    }
 
     @PluginMethod public void prepareNotifications(PluginCall call) {
         getActivity().runOnUiThread(() -> {

@@ -39,6 +39,10 @@ public class RoomService extends Service {
     static void refreshAudioRoute() {
         RoomService service = current.get(); if (service != null && service.routes != null) service.routes.resume();
     }
+    static void setAudioOutput(Context context, String mode) {
+        RoomAudioRoute.saveOutputMode(context, mode);
+        RoomService service = current.get(); if (service != null && service.routes != null) service.routes.setOutputMode(mode);
+    }
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private String serverUrl = "", token = "", roomId = "", leaveToken = "";

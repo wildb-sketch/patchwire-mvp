@@ -3,6 +3,9 @@ package com.patchwire.app;
 import android.Manifest;
 import android.app.Application;
 import android.bluetooth.BluetoothHeadset;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothClass;
 import android.bluetooth.BluetoothProfile;
 import android.content.Context;
 import android.content.Intent;
@@ -27,6 +30,8 @@ import org.robolectric.annotation.LooperMode;
 import org.robolectric.shadow.api.Shadow;
 import org.robolectric.shadows.AudioDeviceInfoBuilder;
 import org.robolectric.shadows.ShadowAudioManager;
+import org.robolectric.shadows.ShadowBluetoothHeadset;
+import org.robolectric.util.ReflectionHelpers;
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
@@ -40,8 +45,19 @@ public class RoomAudioRouteTest {
     private final List<String> events = new ArrayList<>();
     private final List<String> failures = new ArrayList<>();
     private AudioDeviceInfo speaker, bluetooth, wired;
+    private BluetoothHeadset headsetProxy;
+    private BluetoothDevice headsetDevice;
+    private ShadowBluetoothHeadset headsets;
     @Before public void setup() {
         context = RuntimeEnvironment.getApplication(); Shadows.shadowOf(context).grantPermissions(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH);
+        context.getSharedPreferences("whassabi_audio", Context.MODE_PRIVATE).edit().clear().commit();
+        BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter(); Shadows.shadowOf(adapter).setEnabled(true);
+        headsetProxy = Shadow.newInstanceOf(BluetoothHeadset.class); headsets = Shadows.shadowOf(headsetProxy);
+        headsetDevice = adapter.getRemoteDevice("10:20:30:40:50:60"); headsets.addConnectedDevice(headsetDevice);
+        Shadows.shadowOf(headsetDevice).setBluetoothClass(ReflectionHelpers.callConstructor(BluetoothClass.class, ReflectionHelpers.ClassParameter.from(int.class, BluetoothClass.Device.AUDIO_VIDEO_WEARABLE_HEADSET)));
+        Shadows.shadowOf(adapter).setProfileProxy(BluetoothProfile.HEADSET, headsetProxy);
+        assertTrue(adapter.isEnabled()); assertEquals(1, headsetProxy.getConnectedDevices().size());
+        assertEquals(BluetoothClass.Device.Major.AUDIO_VIDEO, headsetDevice.getBluetoothClass().getMajorDeviceClass());
         audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE); shadow = Shadows.shadowOf(audio);
         speaker = device(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER); bluetooth = device(AudioDeviceInfo.TYPE_BLUETOOTH_SCO); wired = device(AudioDeviceInfo.TYPE_WIRED_HEADSET);
         audio.setMode(AudioManager.MODE_NORMAL); audio.setSpeakerphoneOn(false); audio.setBluetoothScoOn(false);
@@ -124,7 +140,8 @@ public class RoomAudioRouteTest {
         assertFalse(audio.isSpeakerphoneOn()); assertEquals(AudioManager.MODE_NORMAL, audio.getMode());
     }
     @Test @Config(sdk = 31, shadows = ModernOnlyAudio.class) public void android12UsesOnlyTheCommunicationDeviceApiWithoutWaitingForLegacyScoBroadcasts() {
-        available(speaker, bluetooth); routes.start(); assertEquals("true:bluetooth", ready());
+        available(speaker, bluetooth); routes.start(); idle(300);
+        assertEquals("true:bluetooth", ready());
         assertFalse(audio.isBluetoothScoOn());
         context.sendBroadcast(new Intent(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED).putExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, AudioManager.SCO_AUDIO_STATE_DISCONNECTED)); idle(300);
         assertEquals("true:bluetooth", ready());
@@ -132,7 +149,7 @@ public class RoomAudioRouteTest {
         routes.stop(); assertEquals(AudioManager.MODE_NORMAL, audio.getMode());
     }
     @Test @Config(sdk = 31, shadows = DelayedAudio.class) public void captureCanStartBeforeAndroidFinishesTheBluetoothRoute() {
-        available(speaker, bluetooth); routes.start(); assertNull(ready());
+        available(speaker, bluetooth); routes.start(); idle(300); assertNull(ready());
         final String[] capture = {null}; final long[] generation = {-1};
         routes.captureRoute((managed, route, serial) -> { capture[0] = managed + ":" + route; generation[0] = serial; });
         assertEquals("true:system", capture[0]); assertEquals(0, generation[0]);
@@ -147,10 +164,12 @@ public class RoomAudioRouteTest {
     }
     @Test @Config(sdk = 31) public void disconnectingTheHeadsetReturnsToLoudspeakerEvenWhileTheDeviceListIsStale() {
         AudioDeviceInfo earpiece = device(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE);
-        available(earpiece, speaker, bluetooth); routes.start(); assertEquals("true:bluetooth", ready());
+        available(earpiece, speaker, bluetooth); routes.start(); idle(300); assertEquals("true:bluetooth", ready());
+        headsets.removeDevice(headsetDevice);
         context.sendBroadcast(new Intent(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED).putExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED)); idle(300);
         assertEquals("true:speaker", ready()); assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, audio.getCommunicationDevice().getType());
         routes.refreshNow(); idle(500); assertEquals("true:speaker", ready());
+        headsets.addConnectedDevice(headsetDevice);
         context.sendBroadcast(new Intent(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED).putExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_CONNECTED)); idle(300);
         assertEquals("true:bluetooth", ready());
     }
@@ -193,7 +212,7 @@ public class RoomAudioRouteTest {
         int count = events.size(); routes.refreshNow(); idle(35000); assertEquals(count, events.size());
     }
     @Test @Config(sdk = 31, shadows = UnavailableBluetoothAudio.class) public void unavailableBluetoothFallsBackPromptlyAndReportsTheActualFailedRoute() {
-        available(speaker, bluetooth); routes.start(); assertNull(ready()); idle(5500);
+        available(speaker, bluetooth); routes.start(); idle(300); assertNull(ready()); idle(5500);
         assertEquals("true:speaker", ready()); assertEquals(Arrays.asList("bluetooth"), failures);
         int count = events.size(); routes.refreshNow(); idle(35000); assertEquals(count, events.size());
     }
@@ -215,6 +234,70 @@ public class RoomAudioRouteTest {
         @Implementation protected void clearCommunicationDevice() { clears++; stale = false; super.clearCommunicationDevice(); }
     }
     @Implements(AudioManager.class) public static class UnavailableBluetoothAudio extends ShadowAudioManager {
+        java.util.concurrent.Executor executor; AudioManager.OnCommunicationDeviceChangedListener listener;
+        @Implementation protected void addOnCommunicationDeviceChangedListener(java.util.concurrent.Executor executor, AudioManager.OnCommunicationDeviceChangedListener listener) {
+            this.executor = executor; this.listener = listener;
+        }
         @Implementation protected boolean setCommunicationDevice(AudioDeviceInfo device) { return RoomAudioRoute.isBluetooth(device.getType()) || super.setCommunicationDevice(device); }
+        void staleBluetoothEvent(AudioDeviceInfo device) { super.setCommunicationDevice(device); executor.execute(() -> listener.onCommunicationDeviceChanged(device)); }
+    }
+    private long generation() { final long[] result = {-1}; routes.captureRoute((managed, route, serial) -> result[0] = serial); return result[0]; }
+    private void classify(BluetoothDevice device, int type) { Shadows.shadowOf(device).setBluetoothClass(ReflectionHelpers.callConstructor(BluetoothClass.class, ReflectionHelpers.ClassParameter.from(int.class, type))); }
+    private void address(AudioDeviceInfo device, String value, int id) {
+        Object port = ReflectionHelpers.getField(device, "mPort"); ReflectionHelpers.setField(port, "mAddress", value);
+        ReflectionHelpers.setField(ReflectionHelpers.getField(port, "mHandle"), "mId", id);
+    }
+    @Test @Config(sdk = 31) public void connectedWatchDoesNotBecomeAutomaticRoomAudio() {
+        classify(headsetDevice, BluetoothClass.Device.WEARABLE_WRIST_WATCH);
+        available(speaker, bluetooth); routes.start(); idle(300);
+        assertEquals("true:speaker", ready()); long serial = generation(); idle(10000);
+        assertEquals("true:speaker", ready()); assertEquals(serial, generation()); assertTrue(failures.isEmpty());
+    }
+    @Test @Config(sdk = 31) public void staleBluetoothPortWithoutAConnectedHfpDeviceCannotDelaySpeakerStartup() {
+        headsets.removeDevice(headsetDevice); available(speaker, bluetooth); routes.start();
+        assertEquals("true:speaker", ready()); idle(10000); assertEquals("true:speaker", ready()); assertTrue(failures.isEmpty());
+    }
+    @Test @Config(sdk = 31, shadows = UnavailableBluetoothAudio.class) public void staleBluetoothCallbacksAfterFailureCannotReenableTheFailedDeviceOrRestartCapture() {
+        available(speaker, bluetooth); routes.start(); idle(6000); assertEquals("true:speaker", ready()); long serial = generation();
+        UnavailableBluetoothAudio state = Shadow.extract(audio);
+        for (int n = 0; n < 5; n++) { state.staleBluetoothEvent(bluetooth); idle(500); assertEquals("true:speaker", ready()); assertEquals(serial, generation()); }
+        assertEquals(Arrays.asList("bluetooth"), failures);
+    }
+    @Test @Config(sdk = 31) public void explicitPhoneSpeakerStaysSelectedWithAWatchAndAcrossRoomRestarts() {
+        available(speaker, bluetooth); routes.setOutputMode("speaker"); routes.start(); idle(300); assertEquals("true:speaker", ready());
+        audio.setCommunicationDevice(bluetooth); routes.refreshNow(); assertEquals("true:speaker", ready());
+        routes.stop(); Shadows.shadowOf(BluetoothAdapter.getDefaultAdapter()).setProfileProxy(BluetoothProfile.HEADSET, headsetProxy);
+        routes = new RoomAudioRoute(context, audio, (a, b, c, d, e) -> {}); routes.start(); idle(300);
+        assertEquals("true:speaker", ready()); assertEquals("speaker", RoomAudioRoute.outputMode(context)); assertTrue(failures.isEmpty());
+    }
+    @Test @Config(sdk = 31) public void earbudsTakePriorityOverTheWatchAndRemovingEarbudsReturnsToSpeaker() {
+        BluetoothDevice watch = BluetoothAdapter.getDefaultAdapter().getRemoteDevice("AA:BB:CC:DD:EE:FF"); classify(watch, BluetoothClass.Device.WEARABLE_WRIST_WATCH); headsets.addConnectedDevice(watch);
+        AudioDeviceInfo watchPort = device(AudioDeviceInfo.TYPE_BLUETOOTH_SCO); address(watchPort, watch.getAddress(), 71); address(bluetooth, headsetDevice.getAddress(), 72);
+        available(speaker, watchPort, bluetooth); routes.start(); idle(300); assertEquals("true:bluetooth", ready()); assertEquals(72, audio.getCommunicationDevice().getId());
+        headsets.removeDevice(headsetDevice); context.sendBroadcast(new Intent(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED).putExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED)); idle(600);
+        assertEquals("true:speaker", ready()); assertTrue(failures.isEmpty());
+    }
+    @Test @Config(sdk = 31, shadows = DelayedAudio.class) public void unconfirmedSpeakerNeverClearsThePreferenceOrChangesMicrophoneGeneration() {
+        available(speaker); routes.start(); String first = events.get(0).split(":")[2]; idle(4500);
+        assertEquals("true:system", ready()); assertEquals(Long.parseLong(first), generation());
+        DelayedAudio state = Shadow.extract(audio); state.confirm(); routes.refreshNow(); idle(300);
+        assertEquals("true:speaker", ready()); assertEquals(Long.parseLong(first), generation());
+    }
+    @Test @Config(sdk = 31) public void aWatchCanBeSelectedOnlyByAnExplicitBluetoothChoice() {
+        classify(headsetDevice, BluetoothClass.Device.WEARABLE_WRIST_WATCH); available(speaker, bluetooth); routes.start(); idle(300);
+        assertEquals("true:speaker", ready()); routes.setOutputMode("bluetooth"); idle(300);
+        assertEquals("true:bluetooth", ready()); routes.setOutputMode("speaker"); assertEquals("true:speaker", ready());
+    }
+    @Test @Config(sdk = 31, shadows = DelayedProfileAdapter.class) public void leavingClosesAProfileDeliveredAsynchronouslyAndCannotRestartRouting() throws Exception {
+        available(speaker, bluetooth); routes.start(); assertEquals("true:speaker", ready());
+        DelayedProfileAdapter state = Shadow.extract(BluetoothAdapter.getDefaultAdapter());
+        Thread binder = new Thread(() -> state.pending.onServiceConnected(BluetoothProfile.HEADSET, headsetProxy)); binder.start(); binder.join();
+        routes.stop(); idle(1000);
+        assertFalse(Shadows.shadowOf(BluetoothAdapter.getDefaultAdapter()).hasActiveProfileProxy(BluetoothProfile.HEADSET));
+        assertEquals(AudioManager.MODE_NORMAL, audio.getMode()); assertNull(audio.getCommunicationDevice());
+    }
+    @Implements(BluetoothAdapter.class) public static class DelayedProfileAdapter extends org.robolectric.shadows.ShadowBluetoothAdapter {
+        BluetoothProfile.ServiceListener pending;
+        @Implementation protected boolean getProfileProxy(Context context, BluetoothProfile.ServiceListener listener, int profile) { pending = listener; return true; }
     }
 }

@@ -39,8 +39,11 @@ test('stage changes render during blocked Android startup; host removal explains
   await host.waitForFunction(id => S.room.members.some(m => m.uid === id && m.hand), guestId);
   await guest.evaluate(() => {
    window.nativeWaiting = false; window.holdNative = () => { window.nativeWaiting = false; window.nativeGate = new Promise(resolve => window.releaseNative = resolve); }; window.holdNative();
-   window.Capacitor = { getPlatform: () => 'android', addListener: () => Promise.resolve(), nativePromise: async (plugin, method) => {
+   window.nativeOutput = 'auto';
+   window.Capacitor = { getPlatform: () => 'android', addListener: () => Promise.resolve(), nativePromise: async (plugin, method, options) => {
     if (method === 'startRoom') { window.nativeWaiting = true; await window.nativeGate; }
+    if (method === 'setAudioOutput') window.nativeOutput = options.route;
+    if (method === 'getAudioStatus' || method === 'setAudioOutput') return { outputMode: window.nativeOutput, output: 'speaker', input: 'inactive' };
     return method === 'prepareAudioRoute' ? { managed: true, generation: 1, route: 'speaker' } : {};
    } };
   });
@@ -54,6 +57,11 @@ test('stage changes render during blocked Android startup; host removal explains
   await guest.waitForFunction(() => S.room.members.some(m => m.uid === S.me.id && m.role === 'listener'));
   await guest.locator('#hand').waitFor({ state: 'visible', timeout: 2500 });
   assert.equal(await guest.evaluate(() => window.demotedTrack.readyState), 'ended'); assert.equal(await guest.evaluate(() => R.mic), null);
+  // Output choice must bypass the unresolved native start and must not open a listener mic.
+  await guest.click('#dots'); await guest.getByRole('menuitem', { name: 'Audio output', exact: true }).click(); await guest.locator('[data-audio-output="speaker"]').click();
+  await guest.waitForFunction(() => document.querySelector('[data-audio-output="speaker"]')?.getAttribute('aria-pressed') === 'true');
+  assert.equal(await guest.evaluate(() => R.mic), null); assert.equal(await guest.evaluate(() => window.nativeOutput), 'speaker');
+  await guest.evaluate(() => closeModal());
   await guest.evaluate(() => window.releaseNative({}));
   await host.evaluate(uid => openProfile(uid), guestId); await host.locator('#mb [data-kick]').click();
   assert.match(await host.locator('#mb').textContent(), /hidden from them until it ends/); await host.click('#confirm-remove');

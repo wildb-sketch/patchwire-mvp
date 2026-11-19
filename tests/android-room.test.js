@@ -171,6 +171,23 @@ for (const file of ['index.html', 'neon.html']) {
   const h=harness(file,{native:async method=>{if(method==='prepareAudioRoute'){if(capturing)refreshed=true;return{managed:true,generation:1,route:'speaker'}}return{}},capture:async()=>{capturing=true;return track}});
   await h.context.syncMic();await tick();assert.equal(refreshed,true);assert.equal(h.context.R.mic,track.track);assert.equal(h.context.S.muted,false);
  });
+ test(`${file}: output recovery failures do not replace a live microphone or change user mute`, async () => {
+  let captures=0;const h=harness(file,{capture:async()=>{captures++;return stream()}});await h.context.syncMic();const track=h.context.R.mic;
+  for(let generation=1;generation<=5;generation++)h.action({action:'audioRouteChanged',ready:true,generation,route:'system',failed:true,failedRoute:'speaker'});
+  await h.context.syncMic();assert.equal(captures,1);assert.equal(h.context.R.mic,track);assert.equal(track.readyState,'live');assert.equal(h.context.S.muted,false);
+ });
+ test(`${file}: choosing phone output preserves a muted microphone and listener output selection never captures`, async () => {
+  let captures=0;const h=harness(file,{capture:async()=>{captures++;return stream()}});h.context.micSheet=async()=>{};
+  h.context.S.muted=true;await h.context.syncMic();const track=h.context.R.mic;await h.context.chooseAudioOutput('speaker');
+  assert(h.calls.some(c=>c.method==='setAudioOutput'&&c.route==='speaker'));assert.equal(captures,1);assert.equal(h.context.R.mic,track);assert.equal(track.enabled,false);assert.equal(h.context.S.muted,true);
+  const listener=harness(file,{capture:async()=>{throw Error('Listener must never record')}});listener.context.micSheet=async()=>{};listener.context.S.room.members[0].role='listener';
+  await listener.context.chooseAudioOutput('speaker');assert.equal(listener.context.R.mic,null);assert(!listener.calls.some(c=>c.method==='prepareMicrophone'));
+ });
+ test(`${file}: older APK output selection asks for an update without disturbing current capture`, async () => {
+  const h=harness(file,{native:async method=>{if(method==='setAudioOutput')throw Object.assign(Error('not implemented'),{code:'UNIMPLEMENTED'});return{}}});
+  await h.context.syncMic();const track=h.context.R.mic;await h.context.chooseAudioOutput('speaker');
+  assert.equal(h.context.R.mic,track);assert.equal(track.readyState,'live');assert(h.toasts.some(t=>t.includes('latest Android update')));
+ });
  test(`${file}: connected earbuds wait for native route confirmation before microphone capture`, async () => {
   const ready = deferred(); let captures = 0, preparing = false;
   const h = harness(file, { native: async method => { if (method === 'prepareAudioRoute') { preparing = true; return ready.promise; } return {}; }, capture: async () => { captures++; return stream(); } });

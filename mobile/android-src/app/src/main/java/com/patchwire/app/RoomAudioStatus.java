@@ -17,6 +17,7 @@ final class RoomAudioStatus {
     static JSObject read(Context context) {
         JSObject result = new JSObject(); result.put("input", "unknown"); result.put("output", "system");
         result.put("inputVerified", false); result.put("headsetNames", new JSONArray());
+        result.put("outputMode", RoomAudioRoute.outputMode(context));
         AudioManager audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         if (audio == null) return result;
         try {
