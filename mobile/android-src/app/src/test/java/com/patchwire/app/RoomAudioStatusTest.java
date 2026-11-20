@@ -59,6 +59,14 @@ public class RoomAudioStatusTest {
         JSObject status = RoomAudioStatus.read(context);
         assertEquals("bluetooth", status.getString("input")); assertTrue(status.getBool("inputVerified"));
     }
+    @Test public void diagnosticReadSeparatesMediaAndCallVolumeWithoutChangingEither() {
+        AudioManager audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        audio.setStreamVolume(AudioManager.STREAM_MUSIC, 2, 0); audio.setStreamVolume(AudioManager.STREAM_VOICE_CALL, 1, 0);
+        JSObject status = RoomAudioStatus.read(context);
+        assertEquals(2, status.getInteger("mediaVolume").intValue()); assertEquals(1, status.getInteger("callVolume").intValue());
+        assertEquals(audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC), status.getInteger("mediaVolumeMax").intValue());
+        assertEquals(2, audio.getStreamVolume(AudioManager.STREAM_MUSIC)); assertEquals(1, audio.getStreamVolume(AudioManager.STREAM_VOICE_CALL));
+    }
     @Test public void anonymizedSessionsAndMissingDeviceInformationCannotConfirmAHeadsetMic() {
         shadow.setActiveRecordingConfigurations(Arrays.asList(recording(0, bluetooth)), false);
         JSObject status = RoomAudioStatus.read(context); assertEquals("inactive", status.getString("input")); assertFalse(status.getBool("inputVerified"));

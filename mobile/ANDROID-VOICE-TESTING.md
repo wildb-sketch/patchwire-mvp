@@ -1,5 +1,17 @@
 # Android voice room reliability
 
+## Notification branding
+
+Room and social notifications use an Android monochrome Whassabi small icon rather than generic system microphone/email icons. The large notification icon uses the existing full-color launcher artwork. Android and OEM notification templates control tint and placement; Huawei can emphasize the launcher icon while Samsung shows the explicitly configured small icon. The microphone symbol on the Mute/Unmute action is retained as an action symbol. Check both the collapsed status-bar mark and expanded notification on the actual Samsung and Huawei devices.
+
+## Android volume buttons during a room
+
+The Samsung device test confirmed that increasing Media volume made received speech louder while the hardware buttons were changing another stream. Room playback uses HTML audio elements; communication mode for capture/routing can cause suggested volume-key dispatch to select call volume instead. While Whassabi has focus and its room service is active, MainActivity now explicitly adjusts media volume on Volume Up/Down, shows Android's volume UI, and consumes key-up without a second adjustment. Holding a button repeats normally and Android retains its volume limits. The handler changes neither microphone gain nor routing, and never raises volume automatically.
+
+Outside an active room, during ringing/telephone calls, or for unrelated keys, normal Android dispatch is preserved. Background and lock-screen volume dispatch remain controlled by Android and need a separate device check. Diagnostics report separate media/call volume indices and maxima without changing them.
+
+Install the matching APK over the previous build. With the tablet speaking and Whassabi open on the Note 10+, press Volume Down and Up and verify actual received loudness changes plus the Media volume indicator. Repeat while locally muted, as a listener, with earbuds, and after disconnecting them. Leave the room and verify normal button behavior; verify ringing/phone-call behavior if available. Automated Android 9/12/14 key-event tests check the selected stream, repeats and phone-call guards, but cannot confirm Samsung's physical volume UI or speaker output.
+
 ## Android 12 speaker compatibility and speech level
 
 On Android 12/12L (API 31/32), phone loudspeaker selection now uses `setSpeakerphoneOn(true)`. A disconnected HFP port can temporarily leave the communication-device inventory without the physical speaker; this path also checks physical outputs. Bluetooth and wired routes still use `setCommunicationDevice`; Android 13+ retains that API for every output. No modern Bluetooth path starts legacy SCO. Speaker retries remain bounded, do not clear the speaker preference, and do not generate new microphone identities. Active phone calls retain priority.

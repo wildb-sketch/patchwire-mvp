@@ -3,6 +3,7 @@ package com.patchwire.app;
 import android.app.PendingIntent;
 import android.content.Intent;
 import android.net.Uri;
+import android.graphics.BitmapFactory;
 import androidx.core.app.NotificationCompat;
 import com.google.firebase.messaging.FirebaseMessagingService;
 import com.google.firebase.messaging.RemoteMessage;
@@ -24,7 +25,8 @@ public class WhassabiMessagingService extends FirebaseMessagingService {
         PendingIntent open = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         String tag = "whassabi:" + uid + ":" + kind + ":" + target;
         NotificationCompat.Builder notification = new NotificationCompat.Builder(this, PushStore.CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_dialog_email).setContentTitle("Whassabi")
+            .setSmallIcon(R.drawable.ic_stat_whassabi)
+            .setLargeIcon(BitmapFactory.decodeResource(getResources(), R.drawable.whassabi_notification_logo)).setContentTitle("Whassabi")
             .setCategory("friend".equals(kind) ? NotificationCompat.CATEGORY_SOCIAL : NotificationCompat.CATEGORY_MESSAGE).setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setContentIntent(open).setAutoCancel(true).setOnlyAlertOnce(false)
             .setWhen(System.currentTimeMillis()).setShowWhen(true);

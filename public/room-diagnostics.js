@@ -12,7 +12,7 @@
  async function collect(){
   const status=await read(()=>options.nativeStatus?.(),{audioBuild:'status-unavailable'})||{};
   const routing=status.routing||{},track=options.track?.();
-  const native={...pick(status,['audioBuild','webViewVersion','input','inputVerified','silenced','output','outputMode','speakerphoneOn','audioMode','communicationType']),
+  const native={...pick(status,['audioBuild','webViewVersion','input','inputVerified','silenced','output','outputMode','speakerphoneOn','audioMode','communicationType','mediaVolume','mediaVolumeMax','callVolume','callVolumeMax']),
    platform:pick(status.platform,['manufacturer','model','android','sdk']),routing:{...pick(routing,['build','wanted','settled','generation','outputMode']),
     events:(Array.isArray(routing.events)?routing.events:[]).slice(-64).map(event=>pick(event,['ms','event','wanted','mode','speakerphoneOn','communicationType','stateUnavailable']))}};
   let settings={},constraints={};try{settings=pick(track?.getSettings?.(),processing);constraints=pick(track?.getConstraints?.(),processing)}catch(e){}
