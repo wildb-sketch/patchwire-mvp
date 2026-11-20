@@ -6,6 +6,7 @@ import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.graphics.BitmapFactory;
 import android.net.wifi.WifiManager;
 import android.os.*;
 import androidx.core.app.NotificationCompat;
@@ -242,7 +243,8 @@ public class RoomService extends Service {
         PendingIntent toggle = PendingIntent.getService(this, 2,
             new Intent(this, RoomService.class).setAction(ACTION_MUTE).putExtra(EXTRA_MUTED, !muted), flags);
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setSmallIcon(R.drawable.ic_stat_whassabi)
+            .setLargeIcon(BitmapFactory.decodeResource(getResources(), R.drawable.whassabi_notification_logo))
             .setContentTitle(title).setContentText(!speaking ? "Listening — tap to return" : muted ? "Microphone muted" : "Microphone on")
             .setContentIntent(open).setOngoing(true).setSilent(true).setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_CALL).setVisibility(NotificationCompat.VISIBILITY_PUBLIC);

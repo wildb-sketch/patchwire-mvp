@@ -1,5 +1,9 @@
 # Android voice room reliability
 
+## Notification branding
+
+Room and social notifications use an Android monochrome Whassabi small icon rather than generic system microphone/email icons. The large notification icon uses the existing full-color launcher artwork. Android and OEM notification templates control tint and placement; Huawei can emphasize the launcher icon while Samsung shows the explicitly configured small icon. The microphone symbol on the Mute/Unmute action is retained as an action symbol. Check both the collapsed status-bar mark and expanded notification on the actual Samsung and Huawei devices.
+
 ## Android volume buttons during a room
 
 The Samsung device test confirmed that increasing Media volume made received speech louder while the hardware buttons were changing another stream. Room playback uses HTML audio elements; communication mode for capture/routing can cause suggested volume-key dispatch to select call volume instead. While Whassabi has focus and its room service is active, MainActivity now explicitly adjusts media volume on Volume Up/Down, shows Android's volume UI, and consumes key-up without a second adjustment. Holding a button repeats normally and Android retains its volume limits. The handler changes neither microphone gain nor routing, and never raises volume automatically.
