@@ -10,7 +10,7 @@ import org.json.JSONArray;
 
 /** Bounded in-memory route history. No device names/addresses, room data or credentials. */
 final class RoomAudioDiagnostics {
-    static final String BUILD = "android12-audio-compat-1";
+    static final String BUILD = "android-media-volume-1";
     private final long started = SystemClock.elapsedRealtime();
     private final ArrayDeque<JSObject> events = new ArrayDeque<>();
     synchronized void add(String event, String wanted, AudioManager audio) {

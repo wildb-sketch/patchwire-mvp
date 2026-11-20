@@ -5,7 +5,7 @@ const diagnostics=require('../public/room-diagnostics');
 test('audio diagnostics copy only permitted device and media fields, without participant or transport identities',async()=>{
  const secret='private-fixture';let copied;
  const report=diagnostics({
-  nativeStatus:async()=>({audioBuild:'test',input:'phone',output:'speaker',token:secret,outputName:secret,
+  nativeStatus:async()=>({audioBuild:'test',input:'phone',output:'speaker',mediaVolume:2,mediaVolumeMax:15,callVolume:1,callVolumeMax:7,token:secret,outputName:secret,
    platform:{model:'Note',sdk:31,serial:secret},routing:{wanted:'speaker',settled:true,address:secret,
     events:Array.from({length:70},(_,ms)=>({ms,event:'route_ready',wanted:'speaker',address:secret}))}}),
   track:()=>({readyState:'live',enabled:true,id:secret,label:secret,
@@ -22,6 +22,8 @@ test('audio diagnostics copy only permitted device and media fields, without par
  assert.equal(result.peers[0].audio[0].packetsReceived,0);
  assert.deepEqual(result.capture.settings,{autoGainControl:true,echoCancellation:true});
  assert.deepEqual(result.capture.constraints,{autoGainControl:true});
+ assert.equal(result.native.mediaVolume,2);assert.equal(result.native.mediaVolumeMax,15);
+ assert.equal(result.native.callVolume,1);assert.equal(result.native.callVolumeMax,7);
  assert.equal(result.capture.userMuted,false);assert.equal(result.capture.speakingRole,true);assert.equal(result.capture.roomActive,true);
 });
 

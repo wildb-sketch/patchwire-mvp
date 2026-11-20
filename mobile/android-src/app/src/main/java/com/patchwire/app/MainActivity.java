@@ -2,6 +2,8 @@ package com.patchwire.app;
 
 import android.content.*;
 import android.os.*;
+import android.media.AudioManager;
+import android.view.KeyEvent;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
@@ -38,6 +40,11 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override public void onResume() { super.onResume(); PushStore.opened(this); PushPlugin.changed(); }
+
+    @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        AudioManager audio = (AudioManager) getSystemService(AUDIO_SERVICE);
+        return RoomVolumeKeys.handle(audio, RoomService.active, event) || super.dispatchKeyEvent(event);
+    }
 
     private void keepRoomWebViewRunning() {
         if (!RoomService.active || getBridge() == null || getBridge().getWebView() == null) return;

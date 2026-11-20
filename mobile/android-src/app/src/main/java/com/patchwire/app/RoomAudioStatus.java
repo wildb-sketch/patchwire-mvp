@@ -25,6 +25,12 @@ final class RoomAudioStatus {
         AudioManager audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         if (audio == null) return result;
         try {
+            result.put("mediaVolume", audio.getStreamVolume(AudioManager.STREAM_MUSIC));
+            result.put("mediaVolumeMax", audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+            result.put("callVolume", audio.getStreamVolume(AudioManager.STREAM_VOICE_CALL));
+            result.put("callVolumeMax", audio.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL));
+        } catch (RuntimeException ignored) { /* Unavailable volume must not hide recording/route evidence. */ }
+        try {
             if (Build.VERSION.SDK_INT >= 31) Api31.output(audio, result);
             else result.put("output", audio.isBluetoothScoOn() ? "bluetooth" : audio.isWiredHeadsetOn() ? "wired" : audio.isSpeakerphoneOn() ? "speaker" : "system");
         } catch (RuntimeException ignored) { /* Output may be unavailable while recording information is readable. */ }
