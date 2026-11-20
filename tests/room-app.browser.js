@@ -90,8 +90,33 @@ test('both complete app designs retain microphone, mute, chat and room across ne
   const text=await page.evaluate(()=>window.copiedAudioReport),report=JSON.parse(text);
   assert.equal(report.format,'whassabi-audio-1');assert.equal(report.capture.settings.autoGainControl,true);
   assert.equal(report.capture.constraints.autoGainControl,true);
+  assert.equal(report.capture.userMuted,false);assert.equal(report.capture.speakingRole,true);assert.equal(report.capture.roomActive,true);
   assert(!(await page.evaluate(text=>text.includes(S.tok)||text.includes(S.me.id),text)));
   assert(!text.includes('deviceId'));assert(!text.includes('candidate'));await page.evaluate(()=>closeModal());
+  // Reproduce blocked WebView clipboard APIs. The report must remain available
+  // for Android's native text-selection Copy action without changing room audio.
+  const before=await page.evaluate(()=>({track:R.mic.id,enabled:R.mic.enabled,muted:S.muted,room:S.room.id}));
+  await page.evaluate(()=>{
+   window.workingClipboardWrite=navigator.clipboard.writeText;window.workingCopyCommand=document.execCommand;
+   navigator.clipboard.writeText=async()=>{throw new DOMException('Clipboard blocked','NotAllowedError')};
+   document.execCommand=command=>{if(command==='copy'){window.legacyCopyAttempted=true;return false}return window.workingCopyCommand.call(document,command)};
+  });
+  await page.evaluate(()=>micSheet());await page.locator('#copy-audio-diagnostics').click();
+  await page.waitForFunction(()=>document.querySelector('#audio-diagnostics-copy-status')?.textContent.includes('Long-press'));
+  const visible=await page.locator('#audio-diagnostics-report').inputValue();
+  assert.equal(JSON.parse(visible).format,'whassabi-audio-1');assert(await page.evaluate(()=>window.legacyCopyAttempted));
+  assert(await page.locator('#audio-diagnostics-report').isVisible());
+  await page.locator('#select-audio-report').click();
+  assert.deepEqual(await page.locator('#audio-diagnostics-report').evaluate(area=>[area.selectionStart,area.selectionEnd]),[0,visible.length]);
+  await page.locator('#copy-audio-report').click();
+  await page.waitForFunction(()=>!document.querySelector('#copy-audio-report').disabled);
+  assert.equal(await page.locator('#audio-diagnostics-report').inputValue(),visible);
+  // The same prepared report can be copied on a fresh gesture when access returns.
+  await page.evaluate(()=>{navigator.clipboard.writeText=window.workingClipboardWrite;document.execCommand=window.workingCopyCommand;window.copiedAudioReport=null});
+  await page.locator('#copy-audio-report').click();await page.waitForFunction(()=>window.copiedAudioReport);
+  assert.equal(await page.evaluate(()=>window.copiedAudioReport),visible);
+  assert.deepEqual(await page.evaluate(()=>({track:R.mic.id,enabled:R.mic.enabled,muted:S.muted,room:S.room.id})),before);
+  await page.locator('#close-audio-report').click();assert(await page.locator('#md').isHidden());
  }
  assert.deepEqual(errors,[]);
 });
