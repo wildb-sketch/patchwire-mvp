@@ -13,6 +13,7 @@ test('audio diagnostics copy only permitted device and media fields, without par
    getConstraints:()=>({autoGainControl:true,deviceId:{exact:secret}})}),
   peers:()=>Object.fromEntries(Array.from({length:10},(_,i)=>[secret+i,{uid:secret,pc:{connectionState:'connected',localDescription:{sdp:secret},
    getStats:async()=>new Map(Array.from({length:12},(_,i)=>[i,{type:'inbound-rtp',kind:'audio',packetsReceived:i,ssrc:secret,trackIdentifier:secret,remoteId:secret}]).concat([['candidate',{type:'local-candidate',address:secret}]]))}}])),
+  intent:()=>({userMuted:false,speakingRole:true,roomActive:true,roomId:secret}),
   userAgent:()=> 'test-browser',copy:async value=>{copied=value}
  });
  const result=JSON.parse(await report.copy());
@@ -21,6 +22,7 @@ test('audio diagnostics copy only permitted device and media fields, without par
  assert.equal(result.peers[0].audio[0].packetsReceived,0);
  assert.deepEqual(result.capture.settings,{autoGainControl:true,echoCancellation:true});
  assert.deepEqual(result.capture.constraints,{autoGainControl:true});
+ assert.equal(result.capture.userMuted,false);assert.equal(result.capture.speakingRole,true);assert.equal(result.capture.roomActive,true);
 });
 
 test('unavailable native status or peer stats do not block copying the remaining audio evidence',async()=>{
@@ -30,4 +32,17 @@ test('unavailable native status or peer stats do not block copying the remaining
  const result=JSON.parse(await report.copy());
  assert.equal(writes,1);assert.equal(result.native.audioBuild,'status-unavailable');
  assert.equal(result.capture.present,false);assert.equal(result.peers[0].statsUnavailable,true);
+});
+
+test('unresponsive native and peer calls produce a partial report instead of hanging diagnostics',{timeout:6000},async()=>{
+ const pending=new Promise(()=>{});
+ const report=await diagnostics({nativeStatus:()=>pending,peers:()=>({peer:{pc:{getStats:()=>pending}}})}).collect();
+ assert.equal(report.native.audioBuild,'status-unavailable');assert.equal(report.peers[0].statsUnavailable,true);
+});
+
+test('closing the hardware panel while diagnostics collect cannot reopen it or copy afterward',async()=>{
+ let finish;const pending=new Promise(resolve=>{finish=resolve});let open=true,presented=false;
+ const report=diagnostics({nativeStatus:()=>pending,present:()=>{presented=true},copy:()=>assert.fail('must not copy after closing')});
+ const showing=report.show(()=>open);open=false;finish({});
+ await showing;assert.equal(presented,false);
 });
